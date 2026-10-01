@@ -134,13 +134,14 @@ fn export_a() {
         " *\n",
         " * Testing\n",
         " */\n",
-        "type a = {\n  \n",
-        "/**\n",
+        "type a = {\n",
+        "  /**\n",
         " * Doc of field\n",
         " *\n",
         " * Testing\n",
         " */\n",
-        "name: string,\n}\n",
+        "  name: string,\n",
+        "}\n",
     );
 
     let actual_content = super::read_file::<A>(&cfg);
@@ -160,13 +161,14 @@ fn export_b() {
         " *\n",
         " * Testing\n",
         " */\n",
-        "type b = {\n  \n",
-        "/**\n",
+        "type b = {\n",
+        "  /**\n",
         " * Doc of field\n",
         " *\n",
         " * Testing\n",
         " */\n",
-        "name: string,\n}\n",
+        "  name: string,\n",
+        "}\n",
     );
 
     let actual_content = super::read_file::<B>(&cfg);
@@ -186,7 +188,7 @@ fn export_c() {
         " *\n",
         " * Testing\n",
         " */\n",
-        "type c = {  }\n",
+        "type c = {}\n",
     );
 
     let actual_content = super::read_file::<C>(&cfg);
@@ -313,15 +315,16 @@ fn export_i() {
         "/**\n",
         " *line 115\n",
         " */\n",
-        "type i = {\n  \n",
-        "/**\n",
+        "type i = {\n",
+        "  /**\n",
         " *column 32\n",
         " */\n",
-        "a: int,\n  \n",
-        "/**\n",
+        "  a: int,\n",
+        "  /**\n",
         " *path integration::docs\n",
         " */\n",
-        "b: int,\n}\n",
+        "  b: int,\n",
+        "}\n",
     );
 
     let actual_content = super::read_file::<I>(&cfg);
