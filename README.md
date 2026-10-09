@@ -53,6 +53,50 @@ type user = { user_id: int, first_name: string, last_name: string }
 If there's a type you're dealing with which doesn't implement `TS`, you can use either
 `#[rescript(as = "..")]` or `#[rescript(type = "..")]`, enable the appropriate cargo feature, or open a PR.
 
+### Spice codecs (`spice` feature)
+`#[derive(Spice)]` defines a type once in Rust for both languages. It writes a ReScript declaration with
+[ppx-spice](https://github.com/jfrolich/ppx_spice) annotations (so ppx-spice generates the ReScript `t_decode` and
+`t_encode`), and a Rust codec (`rescript_rs::spice::Spice`) that reads and writes JSON the way that generated code
+does: same accepted inputs, same error paths and messages, same output. That keeps JSON that ReScript code already
+reads and writes (stored rows, API bodies) compatible.
+
+```rust
+#[derive(rescript_rs::Spice, Clone)]
+#[spice(module = "DB__Row", name = "t")]
+struct Row {
+    #[spice(key = "PK")]
+    pk: String,
+    #[spice(name = "userID")]
+    user_id: String,
+    #[spice(default = "[]")]
+    words: Vec<String>,
+    #[spice(optional)]
+    title: Option<String>,
+}
+```
+
+`rescript_rs::spice::Module::new("DB__Row").with::<Row>().render()` gives `DB__Row.res`:
+
+```rescript
+@spice
+type t = {
+  @spice.key("PK")
+  pk: string,
+  userID: string,
+  @spice.default([])
+  words: array<string>,
+  title?: string,
+}
+```
+
+Container attributes: `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `unboxed`,
+`decode_only`, `encode_only`, `rename_all = "camelCase"`. Field attributes: `name` (the ReScript field), `key`
+(`@spice.key`), `default` (`@spice.default`, a ReScript expression; simple literals and constructors are translated,
+otherwise add `rust_default`), `optional` (`field?:`), `codec` + `with` (`@spice.codec` and the Rust module with
+`decode`/`encode`/`samples`). Variant attribute: `alias` (`@spice.as`). A `Host` says how values JSON cannot hold
+(`Infinity`, `bigint`, `Set`) stand in a `serde_json::Value`. `Spice::samples` and `Module::codecs` exist to test a
+type's Rust codec against the ReScript one.
+
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\
 The following environment variables may be set to configure *how* and *where*:
