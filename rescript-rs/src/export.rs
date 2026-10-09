@@ -1,7 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    io::{Seek, SeekFrom},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
@@ -11,12 +9,14 @@ pub(crate) use recursive_export::export_all_into;
 
 use crate::{Config, TS};
 
+mod doc;
 mod error;
+mod format;
 mod path;
 
-static EXPORT_PATHS: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> = OnceLock::new();
+static EXPORT_PATHS: OnceLock<Mutex<HashMap<PathBuf, Vec<Entry>>>> = OnceLock::new();
 
-fn get_export_paths<'a>() -> &'a Mutex<HashMap<PathBuf, HashSet<String>>> {
+fn get_export_paths<'a>() -> &'a Mutex<HashMap<PathBuf, Vec<Entry>>> {
     EXPORT_PATHS.get_or_init(Default::default)
 }
 
@@ -98,90 +98,89 @@ pub(crate) fn export_to<T: TS + ?Sized + 'static, P: AsRef<Path>>(
     path: P,
 ) -> Result<(), ExportError> {
     let path = path.as_ref().to_owned();
-    let type_name = <T as crate::TS>::ident(cfg);
-
-    let buffer = export_to_string::<T>(cfg)?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    export_and_merge(path, type_name, buffer)?;
-
-    Ok(())
+    export_and_merge(path, Entry::new(&generate_decl::<T>(cfg)))
 }
 
-/// Exports the type to a new file if the file hasn't yet been written to.
-/// Otherwise, finds its place in the already existing file and inserts it.
-fn export_and_merge(
-    path: PathBuf,
-    type_name: String,
-    generated_type: String,
-) -> Result<(), ExportError> {
-    use std::io::{Read, Write};
+/// A declaration written to an export file: parsed, so it prints exactly as
+/// `rescript format` would, or kept as generated when it uses syntax the
+/// formatter doesn't know.
+enum Entry {
+    Parsed(format::Decl),
+    Raw { name: String, text: String },
+}
 
-    let lock = &mut get_export_paths().lock().unwrap();
-
-    let Some(entry) = lock.get_mut(&path) else {
-        let mut file = File::create(&path)?;
-        file.write_all(generated_type.as_bytes())?;
-        file.sync_all()?;
-
-        let mut set = HashSet::new();
-        set.insert(type_name);
-        lock.insert(path, set);
-
-        return Ok(());
-    };
-
-    if entry.contains(&type_name) {
-        return Ok(());
+impl Entry {
+    fn new(generated: &str) -> Self {
+        match format::parse(generated) {
+            Some(mut decls) if decls.len() == 1 => Entry::Parsed(decls.pop().unwrap()),
+            _ => Entry::Raw {
+                name: raw_name(generated),
+                text: generated.trim_matches('\n').to_owned(),
+            },
+        }
     }
 
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)?;
+    fn name(&self) -> &str {
+        match self {
+            Entry::Parsed(decl) => &decl.name,
+            Entry::Raw { name, .. } => name,
+        }
+    }
+}
 
-    let file_len = file.metadata()?.len();
+fn raw_name(decl: &str) -> String {
+    decl.split("type ")
+        .last()
+        .and_then(|rest| rest.split(|c: char| c.is_whitespace() || c == '<').next())
+        .unwrap_or_default()
+        .to_owned()
+}
 
-    let mut original_contents = String::with_capacity(file_len as usize);
-    file.read_to_string(&mut original_contents)?;
+/// Adds the declaration to the file's declarations, kept sorted by name, and
+/// rewrites the file. The first export to a path in this process starts the
+/// file afresh.
+fn export_and_merge(path: PathBuf, entry: Entry) -> Result<(), ExportError> {
+    let lock = &mut get_export_paths().lock().unwrap();
+    let entries = lock.entry(path.clone()).or_default();
 
-    let original_contents = normalize_declarations(&original_contents);
+    match entries.binary_search_by(|e| e.name().cmp(entry.name())) {
+        Ok(_) => return Ok(()),
+        Err(at) => entries.insert(at, entry),
+    }
 
-    let buffer = merge(original_contents, generated_type);
-
-    let buffer = make_mutually_recursive(&buffer);
-
-    file.seek(SeekFrom::Start(0))?;
-    file.set_len(0)?;
-    file.write_all(NOTE.as_bytes())?;
-    file.write_all(b"\n")?;
-    file.write_all(buffer.trim_start_matches('\n').as_bytes())?;
-    file.sync_all()?;
-
-    entry.insert(type_name);
+    std::fs::write(&path, render(entries))?;
 
     Ok(())
 }
 
-/// Normalize `type rec` and `and` back to plain `type` so the merge
-/// algorithm can work with a uniform format.
-fn normalize_declarations(content: &str) -> String {
-    content
-        .lines()
-        .map(|line| {
-            if line.starts_with("type rec ") {
-                format!("type {}", &line["type rec ".len()..])
-            } else if line.starts_with("and ") {
-                format!("type {}", &line["and ".len()..])
-            } else {
-                line.to_owned()
-            }
+fn render(entries: &[Entry]) -> String {
+    let parsed: Vec<_> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Parsed(decl) => Some(decl),
+            Entry::Raw { .. } => None,
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+
+    let body = if parsed.len() == entries.len() {
+        format::print(&parsed)
+    } else {
+        let texts: Vec<_> = entries
+            .iter()
+            .map(|e| match e {
+                Entry::Parsed(decl) => format::print(&[decl]),
+                Entry::Raw { text, .. } => text.clone(),
+            })
+            .collect();
+        make_mutually_recursive(&texts.join("\n\n"))
+    };
+
+    format!("{NOTE}\n{body}\n")
 }
 
 /// When a file contains multiple type declarations, convert them to
@@ -222,90 +221,16 @@ fn make_mutually_recursive(declarations: &str) -> String {
     result
 }
 
-const HEADER_ERROR_MESSAGE: &str = "The generated strings must have their NOTE separated from their type declarations by a new line";
-
-const DECLARATION_START: &str = "type ";
-
-/// Inserts the declaration from the newly generated type into the contents
-/// of the file, organizing declarations alphabetically.
-fn merge(original_contents: String, new_contents: String) -> String {
-    let (_, original_decls) = original_contents
-        .split_once("\n\n")
-        .expect(HEADER_ERROR_MESSAGE);
-    let (_, new_decl) = new_contents.split_once("\n\n").expect(HEADER_ERROR_MESSAGE);
-
-    let capacity = original_decls.len() + new_decl.len() + 2;
-
-    let mut buffer = String::with_capacity(capacity);
-
-    let new_decl = new_decl.trim_matches('\n');
-
-    let new_decl_name = new_decl
-        .split(DECLARATION_START)
-        .last()
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap();
-
-    let original_decls: Vec<_> = original_decls
-        .split("\n\n")
-        .map(|x| x.trim_matches('\n'))
-        .collect();
-
-    let mut inserted = false;
-    for decl in &original_decls {
-        let decl_name = decl
-            .split(DECLARATION_START)
-            .last()
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap();
-
-        if inserted || decl_name < new_decl_name {
-            buffer.push('\n');
-            buffer.push_str(decl);
-            buffer.push('\n');
-        } else {
-            buffer.push('\n');
-            buffer.push_str(new_decl);
-            buffer.push('\n');
-
-            buffer.push('\n');
-            buffer.push_str(decl);
-            buffer.push('\n');
-
-            inserted = true;
-        }
-    }
-
-    if !inserted {
-        buffer.push('\n');
-        buffer.push_str(new_decl);
-        buffer.push('\n');
-    }
-
-    buffer
-}
-
 /// Returns the generated definition for `T`.
 pub(crate) fn export_to_string<T: TS + ?Sized + 'static>(
     cfg: &Config,
 ) -> Result<String, ExportError> {
-    let mut buffer = String::with_capacity(1024);
-    buffer.push_str(NOTE);
-    buffer.push('\n');
-    generate_decl::<T>(cfg, &mut buffer);
-    buffer.push('\n');
-    Ok(buffer)
+    Ok(render(&[Entry::new(&generate_decl::<T>(cfg))]))
 }
 
-/// Push the declaration of `T`
-fn generate_decl<T: TS + ?Sized>(cfg: &Config, out: &mut String) {
-    if let Some(docs) = <T as crate::TS>::docs() {
-        out.push_str(&docs);
-    }
-
+/// The declaration of `T`, with its doc comment.
+fn generate_decl<T: TS + ?Sized>(cfg: &Config) -> String {
+    let mut out = <T as crate::TS>::docs().unwrap_or_default();
     out.push_str(&<T as crate::TS>::decl(cfg));
+    out
 }
