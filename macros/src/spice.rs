@@ -809,6 +809,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let gen = Gen { krate };
     let spice = gen.spice();
 
+    check_tuples(&input.data)?;
+
     if !input.generics.params.is_empty() {
         return Err(Error::new(input.generics.span(), "Spice types cannot be generic yet"));
     }
@@ -905,6 +907,50 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
         #declare
     })
+}
+
+/// `rescript_rs::spice::MAX_TUPLE`.
+const MAX_TUPLE: usize = 16;
+
+/// Rejects a tuple longer than the runtime has a codec for, anywhere in a
+/// field's type, with a clearer error than a missing trait impl.
+fn check_tuples(data: &Data) -> Result<()> {
+    fn check(ty: &Type) -> Result<()> {
+        match ty {
+            Type::Tuple(tuple) if tuple.elems.len() > MAX_TUPLE => Err(Error::new(
+                tuple.span(),
+                format!(
+                    "a Spice tuple has at most {MAX_TUPLE} values (this one has {}); use a record",
+                    tuple.elems.len()
+                ),
+            )),
+            Type::Tuple(tuple) => tuple.elems.iter().try_for_each(check),
+            Type::Paren(inner) => check(&inner.elem),
+            Type::Group(inner) => check(&inner.elem),
+            Type::Path(path) => path.path.segments.iter().try_for_each(|segment| {
+                match &segment.arguments {
+                    PathArguments::AngleBracketed(args) => {
+                        args.args.iter().try_for_each(|arg| match arg {
+                            GenericArgument::Type(ty) => check(ty),
+                            _ => Ok(()),
+                        })
+                    }
+                    _ => Ok(()),
+                }
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    match data {
+        Data::Struct(data) => data.fields.iter().try_for_each(|f| check(&f.ty)),
+        Data::Enum(data) => data
+            .variants
+            .iter()
+            .flat_map(|v| v.fields.iter())
+            .try_for_each(|f| check(&f.ty)),
+        Data::Union(_) => Ok(()),
+    }
 }
 
 /// Whether a field's type names the type itself (`Self` or its name),

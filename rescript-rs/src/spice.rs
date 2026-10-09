@@ -813,10 +813,21 @@ macro_rules! tuple {
     };
 }
 
-tuple!(A 0, B 1);
-tuple!(A 0, B 1, C 2);
-tuple!(A 0, B 1, C 2, D 3);
-tuple!(A 0, B 1, C 2, D 3, E 4);
+/// `tuple!` for every length from the first list's up to both lists'.
+macro_rules! tuples {
+    ($($name:ident $index:tt),+;) => {
+        tuple!($($name $index),+);
+    };
+    ($($name:ident $index:tt),+; $next:ident $next_index:tt $(, $rest:ident $rest_index:tt)*) => {
+        tuple!($($name $index),+);
+        tuples!($($name $index),+, $next $next_index; $($rest $rest_index),*);
+    };
+}
+
+/// Tuples of 2 to 16 values, as serde has; the derive rejects a longer one.
+pub const MAX_TUPLE: usize = 16;
+
+tuples!(A 0, B 1; C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11, M 12, N 13, O 14, P 15);
 
 /// Variant and tuple arguments: spice decodes every argument before it
 /// looks at any result, so a throw in a later argument wins over an error
@@ -1047,6 +1058,15 @@ pub mod variant {
 /// #[spice(serde, unboxed)]
 /// enum E {
 ///     A(i32),
+/// }
+/// ```
+///
+/// A tuple has at most 16 values, also inside another type.
+///
+/// ```compile_fail
+/// #[derive(rescript_rs::Spice, Clone)]
+/// struct S {
+///     a: Vec<(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>,
 /// }
 /// ```
 pub mod serde {

@@ -303,3 +303,45 @@ fn samples_cover_fields_and_constructors() {
     assert!(rows.iter().any(|row| row.kind == Kind::Scene));
     assert!(rows.iter().any(|row| row.title == Some("a".into())));
 }
+
+// No Debug or PartialEq: std stops at 12-value tuples.
+#[derive(Spice, Clone)]
+#[spice(module = "Wide", name = "t")]
+struct Wide {
+    values: Vec<(
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        i32,
+        String,
+    )>,
+}
+
+#[test]
+fn sixteen_value_tuples() {
+    let json = json!({"values": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, "p"]]});
+    let wide: Wide = decode(json.clone()).unwrap();
+
+    assert_eq!(wide.values[0].15, "p");
+    assert_eq!(wide.encode::<Plain>(), json);
+    assert_eq!(
+        Wide::declaration(),
+        "@spice\ntype t = {\n  values: array<(int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, string)>,\n}"
+    );
+    assert_eq!(
+        decode::<Wide>(json!({"values": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]}))
+            .err(),
+        Some(error(".values[0][15]", "Not a string", json!(15)))
+    );
+}
