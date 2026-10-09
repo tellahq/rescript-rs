@@ -615,3 +615,74 @@ fn rejected_internally_tagged() {
         (json!(["Point", 1]), ("[1]", "Not an object", json!(1))),
     ]);
 }
+
+/// A polymorphic variant whose ReScript constructors differ from Rust's.
+#[derive(Spice, Debug, Clone, Copy, PartialEq)]
+#[spice(module = "SerdeSize", name = "t", serde, poly)]
+pub enum Size {
+    #[spice(name = "S")]
+    Small,
+    #[spice(name = "M")]
+    Medium,
+    #[spice(alias = "large")]
+    Large,
+}
+
+#[derive(Spice, Debug, Clone, PartialEq)]
+#[spice(module = "SerdeRenamed", name = "t", serde, tag = "type")]
+pub enum Renamed {
+    #[spice(name = "TVPresenter")]
+    TvPresenter { size: Size },
+    #[spice(name = "Bare")]
+    Plain,
+}
+
+/// The default spice encoding of a polymorphic variant.
+#[derive(Spice, Debug, Clone, PartialEq)]
+#[spice(module = "SerdePoly", name = "t", poly)]
+pub enum Poly {
+    A,
+    #[spice(name = "Bee")]
+    B(i32, String),
+}
+
+#[test]
+fn constructor_names_and_polymorphic_variants() {
+    assert_eq!(
+        Size::declaration(),
+        "// A polymorphic variant whose ReScript constructors differ from Rust's.\n@spice.serde\ntype t = [\n  | #S\n  | #M\n  | @spice.as(\"large\") #Large\n]"
+    );
+    assert_eq!(
+        Renamed::declaration(),
+        "@spice.serde @tag(\"type\")\ntype t =\n  | TVPresenter({size: SerdeSize.t})\n  | Bare"
+    );
+    assert_eq!(Poly::declaration(), "// The default spice encoding of a polymorphic variant.\n@spice\ntype t = [\n  | #A\n  | #Bee(int, string)\n]");
+
+    for (value, encoded) in [
+        (Renamed::TvPresenter { size: Size::Small }, json!({"type": "TVPresenter", "size": "S"})),
+        (Renamed::TvPresenter { size: Size::Large }, json!({"type": "TVPresenter", "size": "large"})),
+        (Renamed::Plain, json!({"type": "Bare"})),
+    ] {
+        assert_eq!(value.encode::<Plain>(), encoded);
+        assert_eq!(decode::<Renamed>(encoded), Ok(value));
+    }
+
+    assert_eq!(decode::<Size>(json!(["M"])), Ok(Size::Medium));
+    assert_eq!(Poly::B(1, "b".into()).encode::<Plain>(), json!(["Bee", 1, "b"]));
+    assert_eq!(decode::<Poly>(json!(["Bee", 1, "b"])), Ok(Poly::B(1, "b".into())));
+    errors::<Renamed>(&[
+        (json!({"type": "TvPresenter"}), ("", "Invalid variant constructor", json!({"type": "TvPresenter"}))),
+        (json!({"type": "TVPresenter", "size": "Small"}), (".size", "Invalid variant constructor", json!("Small"))),
+    ]);
+    errors::<Poly>(&[
+        (json!(["B", 1, "b"]), ("", "Invalid polymorphic variant constructor", json!("B"))),
+        (json!(["A", 1]), ("", "Invalid number of arguments to polyvariant constructor", json!(["A", 1]))),
+        (json!("A"), ("", "Not a polyvariant", json!("A"))),
+        (json!([]), ("", "Expected polyvariant, found empty array", json!([]))),
+    ]);
+    // In serde mode only the legacy arrays use the polymorphic wording.
+    errors::<Size>(&[
+        (json!(["Small"]), ("", "Invalid polymorphic variant constructor", json!("Small"))),
+        (json!("Small"), ("", "Invalid variant constructor", json!("Small"))),
+    ]);
+}
