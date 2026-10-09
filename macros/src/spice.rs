@@ -42,6 +42,10 @@ struct ContainerAttr {
     /// `@spice.decode` or `@spice.encode` instead of `@spice`: ReScript gets
     /// only that function (Rust gets both).
     only: Option<&'static str>,
+    /// `@spice.serde`: variants encoded like Rust's serde derive.
+    serde: bool,
+    /// `@tag(…)` with `serde`: internally tagged.
+    tag: Option<String>,
     krate: Option<Path>,
 }
 
@@ -94,6 +98,10 @@ impl ContainerAttr {
                     out.only = Some("@spice.encode");
                 } else if meta.path.is_ident("unboxed") {
                     out.unboxed = true;
+                } else if meta.path.is_ident("serde") {
+                    out.serde = true;
+                } else if meta.path.is_ident("tag") {
+                    out.tag = Some(string(&meta)?);
                 } else if meta.path.is_ident("rename_all") {
                     let value = string(&meta)?;
 
@@ -110,6 +118,20 @@ impl ContainerAttr {
 
                 Ok(())
             })?;
+        }
+
+        if out.tag.is_some() && !out.serde {
+            return Err(Error::new(
+                Span::call_site(),
+                "tag needs serde: #[spice(serde, tag = \"…\")]",
+            ));
+        }
+
+        if out.serde && out.unboxed {
+            return Err(Error::new(
+                Span::call_site(),
+                "@spice.serde can't be combined with @unboxed",
+            ));
         }
 
         Ok(out)
@@ -376,6 +398,247 @@ fn parse_fields(fields: &syn::FieldsNamed, camel_case: bool) -> Result<Vec<Parse
         .collect()
 }
 
+/// The local a decoded field is bound to, which can't shadow the
+/// decoder's own (`json`, `fields`, `payload`, …).
+fn field_var(ident: &Ident) -> Ident {
+    format_ident!("spice_field_{}", ident.unraw())
+}
+
+/// The JSON name of a `@spice.serde` constructor.
+fn serde_name(v: &ParsedVariant) -> String {
+    match &v.alias {
+        Some(AliasValue::String(name)) => name.clone(),
+        _ => v.variant.ident.unraw().to_string(),
+    }
+}
+
+fn validate_serde(container: &ContainerAttr, variants: &[ParsedVariant]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+
+    for v in variants {
+        let span = v.variant.span();
+
+        if let Some(AliasValue::Number(_)) = v.alias {
+            return Err(Error::new(
+                span,
+                "@spice.serde needs @spice.as to be a string",
+            ));
+        }
+
+        let name = serde_name(v);
+
+        if !seen.insert(name.clone()) {
+            return Err(Error::new(
+                span,
+                format!("Two constructors are both named {name} in JSON"),
+            ));
+        }
+
+        let Some(tag) = &container.tag else {
+            continue;
+        };
+
+        match &v.variant.fields {
+            Fields::Unnamed(unnamed) if unnamed.unnamed.len() > 1 => {
+                return Err(Error::new(
+                    span,
+                    "An internally tagged (tag = …) serde constructor can't have several payload \
+                     values, like serde's #[serde(tag = …)]; use named fields, or one value that \
+                     encodes to an object",
+                ));
+            }
+            Fields::Named(_) if v.fields.iter().flatten().any(|f| &f.key == tag) => {
+                return Err(Error::new(
+                    span,
+                    format!("A payload field is keyed like the tag {tag}"),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// The decoder and encoder of a `@spice.serde` variant; `array_decode`
+/// reads the default spice array from `items`.
+fn derive_serde(
+    gen: &Gen,
+    container: &ContainerAttr,
+    variants: &[ParsedVariant],
+    array_decode: TokenStream,
+) -> Result<(TokenStream, TokenStream)> {
+    let spice = gen.spice();
+    let tag = container.tag.as_deref();
+    let mut names = vec![];
+    let mut objects = vec![];
+    let mut encodes = vec![];
+
+    for v in variants {
+        let constructor = &v.variant.ident;
+        let name = serde_name(v);
+        let json_name = quote!(#spice::Value::String(::std::string::String::from(#name)));
+        let tag_entry = tag.map(|tag| {
+            quote!((::std::string::String::from(#tag), ::std::option::Option::Some(#json_name)))
+        });
+        let wrap = |value: TokenStream| quote!(#spice::object([(::std::string::String::from(#name), ::std::option::Option::Some(#value))]));
+
+        match &v.variant.fields {
+            Fields::Unit => {
+                names.push(quote!(#name => Ok(Self::#constructor),));
+                objects.push(match tag {
+                    Some(_) => quote!(#name => Ok(Self::#constructor),),
+                    None => quote! {
+                        #name => #spice::serde::at(
+                            #spice::serde::unit::<H>(payload).map(|()| Self::#constructor),
+                            #name,
+                        ),
+                    },
+                });
+                encodes.push(match &tag_entry {
+                    Some(entry) => quote!(Self::#constructor => #spice::object([#entry]),),
+                    None => quote!(Self::#constructor => #json_name,),
+                });
+            }
+            Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1 => {
+                let ty = &unnamed.unnamed[0].ty;
+                let encoded = quote!(#spice::Spice::encode::<H>(v0));
+
+                match tag {
+                    Some(tag) => {
+                        objects.push(quote! {
+                            #name => {
+                                let payload = #spice::serde::untagged(&map, #tag);
+
+                                <#ty as #spice::Spice>::decode::<H>(&payload).map(Self::#constructor)
+                            }
+                        });
+                        encodes.push(quote! {
+                            Self::#constructor(v0) => #spice::serde::tagged_object(#tag, #name, #encoded),
+                        });
+                    }
+                    None => {
+                        objects.push(quote! {
+                            #name => #spice::serde::at(
+                                <#ty as #spice::Spice>::decode::<H>(payload).map(Self::#constructor),
+                                #name,
+                            ),
+                        });
+                        let value = wrap(encoded);
+
+                        encodes.push(quote!(Self::#constructor(v0) => #value,));
+                    }
+                }
+            }
+            Fields::Unnamed(unnamed) => {
+                let count = unnamed.unnamed.len();
+                let vars: Vec<Ident> = (0..count).map(|i| format_ident!("v{i}")).collect();
+                let decodes = unnamed.unnamed.iter().enumerate().map(|(i, f)| {
+                    let ty = &f.ty;
+
+                    quote!(#spice::args::decode::<H, #ty>(&items[#i])?)
+                });
+                let finishes = vars
+                    .iter()
+                    .enumerate()
+                    .map(|(i, var)| quote!(#spice::args::finish(#var, #i)?));
+                let value = wrap(
+                    quote!(#spice::Value::Array(vec![#(#spice::Spice::encode::<H>(#vars)),*])),
+                );
+
+                objects.push(quote! {
+                    #name => #spice::serde::at(
+                        (|| {
+                            let items = #spice::serde::args::<H>(payload, #count)?;
+                            let (#(#vars,)*) = (#(#decodes,)*);
+
+                            Ok(Self::#constructor(#(#finishes),*))
+                        })(),
+                        #name,
+                    ),
+                });
+                encodes.push(quote!(Self::#constructor(#(#vars),*) => #value,));
+            }
+            Fields::Named(_) => {
+                let fields = v.fields.as_ref().expect("named");
+                let decode_fields = gen.decode_fields(fields, quote!(json))?;
+                let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
+                let vars: Vec<Ident> = fields.iter().map(|f| field_var(&f.ident)).collect();
+                let built = quote!(Ok(Self::#constructor { #(#idents: #vars),* }));
+
+                match &tag_entry {
+                    Some(entry) => {
+                        let object =
+                            gen.encode_fields_after(Some(entry.clone()), fields, |f| quote!(#f));
+
+                        objects.push(quote! {
+                            #name => (|| {
+                                let fields: &#spice::Map<::std::string::String, #spice::Value> = &map;
+
+                                #decode_fields
+
+                                #built
+                            })(),
+                        });
+                        encodes.push(quote!(Self::#constructor { #(#idents),* } => #object,));
+                    }
+                    None => {
+                        let value = wrap(gen.encode_fields(fields, |f| quote!(#f)));
+
+                        objects.push(quote! {
+                            #name => #spice::serde::at(
+                                (|| {
+                                    let fields = #spice::field::object::<H>(payload)?;
+
+                                    #decode_fields
+
+                                    #built
+                                })(),
+                                #name,
+                            ),
+                        });
+                        encodes.push(quote!(Self::#constructor { #(#idents),* } => #value,));
+                    }
+                }
+            }
+        }
+    }
+
+    let object = match tag {
+        Some(tag) => quote! {
+            match #spice::serde::tag::<H>(&map, #tag, json)? {
+                #(#objects)*
+                _ => Err(#spice::serde::unknown(json)),
+            }
+        },
+        None => quote! {
+            let (name, payload) = #spice::serde::external(&map, json)?;
+
+            match name {
+                #(#objects)*
+                _ => Err(#spice::serde::unknown(json)),
+            }
+        },
+    };
+    let decode = quote! {
+        match #spice::serde::shape::<H>(json)? {
+            #spice::serde::Shape::Name(name) => match name {
+                #(#names)*
+                _ => Err(#spice::serde::unknown(json)),
+            },
+            #spice::serde::Shape::Object(map) => { #object }
+            #spice::serde::Shape::Array(items) => #array_decode,
+        }
+    };
+    let encode = quote! {
+        match self {
+            #(#encodes)*
+        }
+    };
+
+    Ok((decode, encode))
+}
+
 struct Gen {
     krate: Path,
 }
@@ -473,7 +736,7 @@ impl Gen {
         let mut out = vec![];
 
         for field in fields {
-            let ident = &field.ident;
+            let ident = field_var(&field.ident);
             let key = &field.key;
             let decode = self.decode_fn(field);
             let default = match (&field.attr.rust_default, &field.attr.default) {
@@ -499,9 +762,23 @@ impl Gen {
     }
 
     /// `(key, Option<Value>)` entries for `spice::object`.
-    fn encode_fields(&self, fields: &[ParsedField], access: impl Fn(&Ident) -> TokenStream) -> TokenStream {
+    fn encode_fields(
+        &self,
+        fields: &[ParsedField],
+        access: impl Fn(&Ident) -> TokenStream,
+    ) -> TokenStream {
+        self.encode_fields_after(None, fields, access)
+    }
+
+    /// [`Self::encode_fields`] after a `(key, value)` entry, e.g. a tag.
+    fn encode_fields_after(
+        &self,
+        leading: Option<TokenStream>,
+        fields: &[ParsedField],
+        access: impl Fn(&Ident) -> TokenStream,
+    ) -> TokenStream {
         let spice = self.spice();
-        let entries = fields.iter().map(|field| {
+        let entries = leading.into_iter().chain(fields.iter().map(|field| {
             let key = &field.key;
             let value = access(&field.ident);
 
@@ -517,7 +794,7 @@ impl Gen {
                     (::std::string::String::from(#key), ::std::option::Option::Some(#spice::Spice::encode::<H>(#value)))
                 },
             }
-        });
+        }));
 
         quote!(#spice::object([#(#entries),*]))
     }
@@ -548,6 +825,12 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let samples = samples(&gen, &input.data)?;
     let (body, decode, encode) = match &input.data {
+        Data::Struct(_) if container.serde => {
+            return Err(Error::new(
+                input.span(),
+                "serde is for enums; a struct is a record either way",
+            ))
+        }
         Data::Struct(data) => derive_struct(&gen, &container, data, ident)?,
         Data::Enum(data) => derive_enum(&gen, &container, data)?,
         Data::Union(_) => return Err(Error::new(input.span(), "unions are not supported")),
@@ -555,7 +838,18 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let mut header = docs(&input.attrs, "");
 
-    header.push_str(container.only.unwrap_or("@spice"));
+    header.push_str(
+        match (container.serde, container.only) {
+            (true, Some(only)) => format!("@spice.serde {only}"),
+            (true, None) => "@spice.serde".into(),
+            (false, only) => only.unwrap_or("@spice").into(),
+        }
+        .as_str(),
+    );
+
+    if let Some(tag) = &container.tag {
+        header.push_str(&format!(" @tag({tag:?})"));
+    }
 
     if container.unboxed {
         header.push_str(" @unboxed");
@@ -566,7 +860,13 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         header.push_str(attrs);
     }
 
-    header.push_str(&format!("\ntype {name} ="));
+    let rec = if refers_to_itself(&input.data, ident) {
+        "rec "
+    } else {
+        ""
+    };
+
+    header.push_str(&format!("\ntype {rec}{name} ="));
 
     let declare = container.module.as_ref().map(|module| {
         quote! {
@@ -591,7 +891,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             }
 
             fn samples() -> ::std::vec::Vec<Self> {
-                #samples
+                #spice::samples_once(|| { #samples })
             }
 
             fn decode<H: #spice::Host>(json: &#spice::Value) -> #spice::Result<Self> {
@@ -605,6 +905,26 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
         #declare
     })
+}
+
+/// Whether a field's type names the type itself (`Self` or its name),
+/// which ReScript declares with `type rec`.
+fn refers_to_itself(data: &Data, ident: &Ident) -> bool {
+    fn mentions(tokens: TokenStream, ident: &Ident) -> bool {
+        tokens.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(name) => name == *ident || name == "Self",
+            proc_macro2::TokenTree::Group(group) => mentions(group.stream(), ident),
+            _ => false,
+        })
+    }
+
+    let fields: Vec<&syn::Field> = match data {
+        Data::Struct(data) => data.fields.iter().collect(),
+        Data::Enum(data) => data.variants.iter().flat_map(|v| v.fields.iter()).collect(),
+        Data::Union(_) => vec![],
+    };
+
+    fields.iter().any(|field| mentions(quote!(#field), ident))
 }
 
 type Derived = (TokenStream, TokenStream, TokenStream);
@@ -628,12 +948,13 @@ fn derive_struct(
             let body = quote!(format!(" {{\n{}}}", [#(#lines),*].concat()));
             let decode_fields = gen.decode_fields(&fields, quote!(json))?;
             let idents = fields.iter().map(|f| &f.ident);
+            let vars = fields.iter().map(|f| field_var(&f.ident));
             let decode = quote! {
                 let fields = #spice::field::object::<H>(json)?;
 
                 #decode_fields
 
-                Ok(#ident { #(#idents),* })
+                Ok(#ident { #(#idents: #vars),* })
             };
             let encode = gen.encode_fields(&fields, |field| quote!(&self.#field));
 
@@ -697,7 +1018,11 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
 
     let aliased = variants.iter().filter(|v| v.alias.is_some()).count();
 
-    if aliased > 0 && aliased != variants.len() {
+    if container.serde {
+        validate_serde(container, &variants)?;
+    }
+
+    if aliased > 0 && !container.serde && aliased != variants.len() {
         return Err(Error::new(
             data.variants.span(),
             "Partial @spice.as usage is not allowed",
@@ -705,6 +1030,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     }
 
     if aliased > 0
+        && !container.serde
         && variants
             .iter()
             .any(|v| !matches!(v.variant.fields, Fields::Unit))
@@ -735,13 +1061,13 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                     quote!(<#ty as #spice::Spice>::rescript_type())
                 });
 
-                quote!(format!("{}  | {}({})\n", #docs, #constructor, [#(#types),*].join(", ")))
+                quote!(format!("{}  | {}{}({})\n", #docs, #alias, #constructor, [#(#types),*].join(", ")))
             }
             Fields::Named(_) => {
                 let fields = v.fields.as_ref().expect("named");
                 let decls = fields.iter().map(|f| gen.field_declaration(f, true));
 
-                quote!(format!("{}  | {}({{{}}})\n", #docs, #constructor, [#(#decls),*].join(", ")))
+                quote!(format!("{}  | {}{}({{{}}})\n", #docs, #alias, #constructor, [#(#decls),*].join(", ")))
             }
         });
     }
@@ -752,7 +1078,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         return derive_unboxed_enum(gen, &variants, body);
     }
 
-    if aliased > 0 {
+    if aliased > 0 && !container.serde {
         return Ok(derive_alias_enum(gen, &variants, body));
     }
 
@@ -811,6 +1137,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                 let fields = v.fields.as_ref().expect("named");
                 let decode_fields = gen.decode_fields(fields, quote!(payload))?;
                 let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
+                let vars: Vec<Ident> = fields.iter().map(|f| field_var(&f.ident)).collect();
                 let object = gen.encode_fields(fields, |field| quote!(#field));
 
                 decode_cases.push(quote! {
@@ -823,7 +1150,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
 
                             #decode_fields
 
-                            Ok(Self::#constructor { #(#idents),* })
+                            Ok(Self::#constructor { #(#idents: #vars),* })
                         })();
 
                         decoded.map_err(|error| error.prefixed("[1]"))
@@ -839,13 +1166,23 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         }
     }
 
-    let decode = quote! {
-        let items = #spice::variant::items::<H>(json)?;
-
+    let array_decode = quote! {
         match #spice::variant::tag::<H>(&items) {
             #(#decode_cases)*
             _ => Err(#spice::variant::unknown(&items)),
         }
+    };
+
+    if container.serde {
+        let (decode, encode) = derive_serde(gen, container, &variants, array_decode)?;
+
+        return Ok((body, decode, encode));
+    }
+
+    let decode = quote! {
+        let items = #spice::variant::items::<H>(json)?;
+
+        #array_decode
     };
     let encode = quote! {
         match self {

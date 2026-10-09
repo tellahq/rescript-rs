@@ -97,6 +97,26 @@ otherwise add `rust_default`), `optional` (`field?:`), `codec` + `with` (`@spice
 (`Infinity`, `bigint`, `Set`) stand in a `serde_json::Value`. `Spice::samples` and `Module::codecs` exist to test a
 type's Rust codec against the ReScript one.
 
+`#[spice(serde)]` on an enum writes `@spice.serde` (ppx-spice since jfrolich/ppx_spice#5), which encodes variants the way Rust's serde derive
+does instead of spice's `["Constructor", …]` arrays; `tag = "type"` adds `@tag("type")`, like `#[serde(tag = "type")]`:
+
+```rust
+#[derive(rescript_rs::Spice, Clone)]
+#[spice(module = "Shape", name = "t", serde, tag = "type")]
+enum Shape {
+    Empty,                      // {"type": "Empty"}
+    Circle { radius: f64 },     // {"type": "Circle", "radius": 1.5}
+    #[spice(alias = "box")]
+    Rect(Size),                 // {"type": "box", "w": 1, "h": 2}, Size being a record
+}
+```
+
+Without `tag`, `Empty` is `"Empty"`, `Circle { radius }` is `{"Circle": {"radius": 1.5}}` and a constructor with
+several values is `{"Pair": [1, "a"]}`. Both decoders still read the old arrays, so stored values keep decoding after
+a type switches to `serde`. `alias` sets a constructor's JSON name (on any constructor); the derive rejects what
+ppx-spice rejects (two constructors with the same JSON name, several values or a field keyed like the tag in a
+tagged constructor).
+
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\
 The following environment variables may be set to configure *how* and *where*:
