@@ -119,7 +119,7 @@ use std::{
 
 pub use rescript_rs_macros::ReScript;
 pub use rescript_rs_macros::ReScript as TS;
-#[cfg(feature = "spice")]
+#[cfg(feature = "spice-codec")]
 pub use rescript_rs_macros::Spice;
 
 pub use crate::export::ExportError;
@@ -131,7 +131,7 @@ mod export;
 mod jiff;
 #[cfg(feature = "serde-json-impl")]
 mod serde_json;
-#[cfg(feature = "spice")]
+#[cfg(feature = "spice-codec")]
 pub mod spice;
 #[cfg(feature = "tokio-impl")]
 mod tokio;

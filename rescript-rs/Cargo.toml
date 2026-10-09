@@ -30,7 +30,11 @@ heapless-impl = ["heapless"]
 semver-impl = ["semver"]
 smol_str-impl = ["smol_str"]
 serde-json-impl = ["serde_json"]
-spice = ["serde_json", "serde_json/preserve_order"]
+spice = ["spice-codec", "serde_json/preserve_order"]
+# The spice codec without turning on serde_json's preserve_order for the
+# whole build: objects it writes and reads have sorted keys instead of
+# JavaScript's order. The values are the same.
+spice-codec = ["serde_json"]
 no-serde-warnings = ["rescript-rs-macros/no-serde-warnings"]
 tokio-impl = ["tokio"]
 jiff-impl = ["jiff"]

@@ -927,14 +927,42 @@ pub mod field {
 pub mod variant {
     use super::*;
 
+    /// A variant or a polymorphic variant, whose errors spice words
+    /// differently.
+    #[derive(Clone, Copy)]
+    pub enum Kind {
+        Variant,
+        Poly,
+    }
+
+    impl Kind {
+        fn pick(self, variant: &'static str, poly: &'static str) -> &'static str {
+            match self {
+                Kind::Variant => variant,
+                Kind::Poly => poly,
+            }
+        }
+    }
+
     /// The array, or spice's error for anything else.
     pub fn items<H: Host>(json: &Value) -> Result<Cow<'_, [Value]>> {
+        items_of::<H>(Kind::Variant, json)
+    }
+
+    pub fn items_of<H: Host>(kind: Kind, json: &Value) -> Result<Cow<'_, [Value]>> {
         match H::view(json) {
-            View::Array(items) if items.is_empty() => {
-                Err(Failure::error("Expected variant, found empty array", json))
-            }
+            View::Array(items) if items.is_empty() => Err(Failure::error(
+                kind.pick(
+                    "Expected variant, found empty array",
+                    "Expected polyvariant, found empty array",
+                ),
+                json,
+            )),
             View::Array(items) => Ok(items),
-            _ => Err(Failure::error("Not a variant", json)),
+            _ => Err(Failure::error(
+                kind.pick("Not a variant", "Not a polyvariant"),
+                json,
+            )),
         }
     }
 
@@ -947,18 +975,35 @@ pub mod variant {
     }
 
     pub fn arity(items: &[Value], arguments: usize, json: &Value) -> Result<()> {
+        arity_of(Kind::Variant, items, arguments, json)
+    }
+
+    pub fn arity_of(kind: Kind, items: &[Value], arguments: usize, json: &Value) -> Result<()> {
         if items.len() == arguments + 1 {
             Ok(())
         } else {
             Err(Failure::error(
-                "Invalid number of arguments to variant constructor",
+                kind.pick(
+                    "Invalid number of arguments to variant constructor",
+                    "Invalid number of arguments to polyvariant constructor",
+                ),
                 json,
             ))
         }
     }
 
     pub fn unknown(items: &[Value]) -> Failure {
-        Failure::error("Invalid variant constructor", &items[0])
+        unknown_of(Kind::Variant, items)
+    }
+
+    pub fn unknown_of(kind: Kind, items: &[Value]) -> Failure {
+        Failure::error(
+            kind.pick(
+                "Invalid variant constructor",
+                "Invalid polymorphic variant constructor",
+            ),
+            &items[0],
+        )
     }
 
     /// The JSON of a variant whose constructors all have `@spice.as`.
@@ -1048,6 +1093,16 @@ pub mod variant {
 /// #[spice(tag = "type")]
 /// enum E {
 ///     A,
+/// }
+/// ```
+///
+/// A polymorphic variant has no constructors with named fields.
+///
+/// ```compile_fail
+/// #[derive(rescript_rs::Spice, Clone)]
+/// #[spice(poly)]
+/// enum E {
+///     A { x: i32 },
 /// }
 /// ```
 ///

@@ -89,11 +89,12 @@ type t = {
 }
 ```
 
-Container attributes: `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `unboxed`,
+Container attributes: `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `unboxed`, `poly` (a
+polymorphic variant, `[#A | #B]`; its JSON is a variant's),
 `decode_only`, `encode_only`, `rename_all = "camelCase"`. Field attributes: `name` (the ReScript field), `key`
 (`@spice.key`), `default` (`@spice.default`, a ReScript expression; simple literals and constructors are translated,
 otherwise add `rust_default`), `optional` (`field?:`), `codec` + `with` (`@spice.codec` and the Rust module with
-`decode`/`encode`/`samples`). Variant attribute: `alias` (`@spice.as`). A `Host` says how values JSON cannot hold
+`decode`/`encode`/`samples`). Variant attributes: `name` (the ReScript constructor, which spice also writes in JSON) and `alias` (`@spice.as`). A `Host` says how values JSON cannot hold
 (`Infinity`, `bigint`, `Set`) stand in a `serde_json::Value`. `Spice::samples` and `Module::codecs` exist to test a
 type's Rust codec against the ReScript one.
 
@@ -116,6 +117,10 @@ several values is `{"Pair": [1, "a"]}`. Both decoders still read the old arrays,
 a type switches to `serde`. `alias` sets a constructor's JSON name (on any constructor); the derive rejects what
 ppx-spice rejects (two constructors with the same JSON name, several values or a field keyed like the tag in a
 tagged constructor).
+
+The `spice` feature turns on serde_json's `preserve_order`, so objects keep JavaScript's key order. Where that is
+unwanted for the whole build, `spice-codec` is the same codec without it: objects have sorted keys, the values are
+the same.
 
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\

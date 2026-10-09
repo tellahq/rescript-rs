@@ -47,6 +47,8 @@ struct ContainerAttr {
     /// `@tag(…)` with `serde`: internally tagged.
     tag: Option<String>,
     krate: Option<Path>,
+    /// A polymorphic variant, `[#A | #B]`.
+    poly: bool,
 }
 
 #[derive(Default)]
@@ -63,6 +65,8 @@ struct FieldAttr {
 
 #[derive(Default)]
 struct VariantAttr {
+    /// The ReScript constructor, when it isn't the Rust one.
+    name: Option<String>,
     alias: Option<AliasValue>,
 }
 
@@ -100,6 +104,8 @@ impl ContainerAttr {
                     out.unboxed = true;
                 } else if meta.path.is_ident("serde") {
                     out.serde = true;
+                } else if meta.path.is_ident("poly") {
+                    out.poly = true;
                 } else if meta.path.is_ident("tag") {
                     out.tag = Some(string(&meta)?);
                 } else if meta.path.is_ident("rename_all") {
@@ -124,6 +130,13 @@ impl ContainerAttr {
             return Err(Error::new(
                 Span::call_site(),
                 "tag needs serde: #[spice(serde, tag = \"…\")]",
+            ));
+        }
+
+        if out.poly && out.unboxed {
+            return Err(Error::new(
+                Span::call_site(),
+                "a polymorphic variant can't be unboxed",
             ));
         }
 
@@ -178,7 +191,9 @@ impl VariantAttr {
 
         for attr in spice_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("alias") {
+                if meta.path.is_ident("name") {
+                    out.name = Some(string(&meta)?);
+                } else if meta.path.is_ident("alias") {
                     let lit: syn::Lit = meta.value()?.parse()?;
 
                     out.alias = Some(match lit {
@@ -408,7 +423,7 @@ fn field_var(ident: &Ident) -> Ident {
 fn serde_name(v: &ParsedVariant) -> String {
     match &v.alias {
         Some(AliasValue::String(name)) => name.clone(),
-        _ => v.variant.ident.unraw().to_string(),
+        _ => v.name.clone(),
     }
 }
 
@@ -1023,6 +1038,8 @@ fn derive_struct(
 
 struct ParsedVariant<'a> {
     variant: &'a syn::Variant,
+    /// The ReScript constructor, which is also its name in JSON.
+    name: String,
     alias: Option<AliasValue>,
     fields: Option<Vec<ParsedField>>,
 }
@@ -1048,14 +1065,21 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         .variants
         .iter()
         .map(|variant| {
-            let alias = VariantAttr::parse(&variant.attrs)?.alias;
+            let VariantAttr { name, alias } = VariantAttr::parse(&variant.attrs)?;
             let fields = match &variant.fields {
+                Fields::Named(_) if container.poly => {
+                    return Err(Error::new(
+                        variant.span(),
+                        "a polymorphic variant constructor can't have named fields",
+                    ))
+                }
                 Fields::Named(named) => Some(parse_fields(named, container.camel_case)?),
                 _ => None,
             };
 
             Ok(ParsedVariant {
                 variant,
+                name: name.unwrap_or_else(|| variant.ident.unraw().to_string()),
                 alias,
                 fields,
             })
@@ -1090,7 +1114,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     let mut lines = vec![];
 
     for v in &variants {
-        let constructor = v.variant.ident.unraw().to_string();
+        let constructor = format!("{}{}", if container.poly { "#" } else { "" }, v.name);
         let docs = docs(&v.variant.attrs, "  ");
         let alias = v
             .alias
@@ -1118,7 +1142,11 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         });
     }
 
-    let body = quote!(format!("\n{}", [#(#lines),*].concat().trim_end()));
+    let body = if container.poly {
+        quote!(format!(" [\n{}\n]", [#(#lines),*].concat().trim_end()))
+    } else {
+        quote!(format!("\n{}", [#(#lines),*].concat().trim_end()))
+    };
 
     if container.unboxed {
         return derive_unboxed_enum(gen, &variants, body);
@@ -1128,18 +1156,23 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         return Ok(derive_alias_enum(gen, &variants, body));
     }
 
+    let kind = if container.poly {
+        quote!(#spice::variant::Kind::Poly)
+    } else {
+        quote!(#spice::variant::Kind::Variant)
+    };
     let mut decode_cases = vec![];
     let mut encode_cases = vec![];
 
     for v in &variants {
         let constructor = &v.variant.ident;
-        let tag = constructor.unraw().to_string();
+        let tag = &v.name;
 
         match &v.variant.fields {
             Fields::Unit => {
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
-                        #spice::variant::arity(&items, 0, json)?;
+                        #spice::variant::arity_of(#kind, &items, 0, json)?;
 
                         Ok(Self::#constructor)
                     }
@@ -1165,7 +1198,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
 
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
-                        #spice::variant::arity(&items, #count, json)?;
+                        #spice::variant::arity_of(#kind, &items, #count, json)?;
 
                         let (#(#vars,)*) = (#(#decodes,)*);
 
@@ -1188,7 +1221,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
 
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
-                        #spice::variant::arity(&items, 1, json)?;
+                        #spice::variant::arity_of(#kind, &items, 1, json)?;
 
                         let payload = &items[1];
                         let decoded = (|| -> #spice::Result<Self> {
@@ -1215,7 +1248,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     let array_decode = quote! {
         match #spice::variant::tag::<H>(&items) {
             #(#decode_cases)*
-            _ => Err(#spice::variant::unknown(&items)),
+            _ => Err(#spice::variant::unknown_of(#kind, &items)),
         }
     };
 
@@ -1226,7 +1259,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     }
 
     let decode = quote! {
-        let items = #spice::variant::items::<H>(json)?;
+        let items = #spice::variant::items_of::<H>(#kind, json)?;
 
         #array_decode
     };
