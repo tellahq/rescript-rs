@@ -2,39 +2,39 @@
 
 use rescript_rs::{
     spice::{Declare, DecodeError, Dict, Failure, Module, Null, Plain, Spice},
-    Spice,
+    ReScript,
 };
 use serde_json::{json, Value};
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Kind")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Kind")]
 enum Kind {
     Story,
     Scene,
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Row", name = "t")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Row", name = "t")]
 /// A stored row.
 struct Row {
-    #[spice(name = "pk", key = "PK")]
+    #[rescript(name = "pk", key = "PK")]
     pk: String,
-    #[spice(name = "type_", key = "type", default = "Story")]
+    #[rescript(name = "type_", key = "type", default = "Story")]
     kind: Kind,
     count: i32,
-    #[spice(default = "[]")]
+    #[rescript(default = "[]")]
     words: Vec<String>,
     note: Option<String>,
-    #[spice(optional)]
+    #[rescript(optional)]
     title: Option<String>,
-    #[spice(default = "1.5")]
+    #[rescript(default = "1.5")]
     scale: f64,
     tags: Dict<bool>,
     parent: Null<String>,
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Shape", name = "t")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Shape", name = "t")]
 enum Shape {
     Empty,
     Circle(f64),
@@ -42,24 +42,18 @@ enum Shape {
     Named { name: String, label: Option<String> },
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Color", name = "t", attrs = "@genType")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Color", name = "t", attrs = "@genType")]
 enum Color {
-    #[spice(alias = "red")]
+    #[rescript(rename = "red")]
     Red,
-    #[spice(alias = "dark-blue")]
+    #[rescript(rename = "dark-blue")]
     Blue,
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Words", name = "t")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Words", name = "t")]
 struct Words(Vec<String>);
-
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Id", name = "t", unboxed)]
-enum Id {
-    Id(String),
-}
 
 fn decode<T: Spice>(json: Value) -> Result<T, Failure> {
     T::decode::<Plain>(&json)
@@ -98,7 +92,7 @@ type t = {
     );
     assert_eq!(
         Shape::declaration(),
-        "@spice
+        "@spice.serde
 type t =
   | Empty
   | Circle(float)
@@ -107,19 +101,15 @@ type t =
     );
     assert_eq!(
         Color::declaration(),
-        "@spice @genType
+        "@spice.serde @genType
 type t =
-  | @spice.as(\"red\") Red
-  | @spice.as(\"dark-blue\") Blue"
+  | @as(\"red\") Red
+  | @as(\"dark-blue\") Blue"
     );
     assert_eq!(Words::declaration(), "@spice\ntype t = array<string>");
     assert_eq!(
-        Id::declaration(),
-        "@spice @unboxed\ntype t =\n  | Id(string)"
-    );
-    assert_eq!(
         Module::new("Kind").with::<Kind>().render(),
-        "@spice\ntype kind =\n  | Story\n  | Scene\n"
+        "@spice.serde\ntype kind =\n  | Story\n  | Scene\n"
     );
 }
 
@@ -148,7 +138,7 @@ fn records() {
     );
     assert_eq!(
         decoded.encode::<Plain>(),
-        json!({"PK": "a", "type": ["Story"], "count": 2, "words": [], "note": "n", "scale": 1.5, "tags": {"1": false, "b": true}, "parent": null})
+        json!({"PK": "a", "type": "Story", "count": 2, "words": [], "note": "n", "scale": 1.5, "tags": {"1": false, "b": true}, "parent": null})
     );
 }
 
@@ -163,7 +153,7 @@ fn record_errors() {
         Err(error(".PK", "PK missing", json!({"count": 1})))
     );
     assert_eq!(
-        decode::<Row>(json!({"PK": "a", "type": ["Nope"], "count": 1})),
+        decode::<Row>(json!({"PK": "a", "type": "Nope", "count": 1})),
         Err(error(".type", "Invalid variant constructor", json!("Nope")))
     );
     assert_eq!(
@@ -186,78 +176,20 @@ fn record_errors() {
 }
 
 #[test]
-fn variants() {
-    for shape in [
-        Shape::Empty,
-        Shape::Circle(1.0),
-        Shape::Rect(1.0, 2.5),
-        Shape::Named {
-            name: "n".into(),
-            label: None,
-        },
-    ] {
-        assert_eq!(decode::<Shape>(shape.encode::<Plain>()), Ok(shape));
-    }
-
-    assert_eq!(
-        Shape::Rect(1.0, 2.5).encode::<Plain>(),
-        json!(["Rect", 1, 2.5])
-    );
-    assert_eq!(
-        decode::<Shape>(json!(["Rect", "a", "b"])),
-        Err(error("[1]", "Not a number", json!("a")))
-    );
-    assert_eq!(
-        decode::<Shape>(json!(["Rect", 1])),
-        Err(error(
-            "",
-            "Invalid number of arguments to variant constructor",
-            json!(["Rect", 1])
-        ))
-    );
-    assert_eq!(
-        decode::<Shape>(json!(["Named", {"label": 1}])),
-        Err(error("[1].name", "name missing", json!({"label": 1})))
-    );
-    assert_eq!(
-        decode::<Shape>(json!(["Named", 1])),
-        Err(error("[1]", "Not an object", json!(1)))
-    );
-    assert_eq!(
-        decode::<Shape>(json!([])),
-        Err(error("", "Expected variant, found empty array", json!([])))
-    );
-    assert_eq!(
-        decode::<Shape>(json!("Empty")),
-        Err(error("", "Not a variant", json!("Empty")))
-    );
-    assert_eq!(
-        decode::<Shape>(json!([1])),
-        Err(error("", "Invalid variant constructor", json!(1)))
-    );
-}
-
-#[test]
-fn aliases_newtypes_and_unboxed() {
+fn renames_and_newtypes() {
     assert_eq!(decode::<Color>(json!("dark-blue")), Ok(Color::Blue));
     assert_eq!(Color::Red.encode::<Plain>(), json!("red"));
     assert_eq!(
         decode::<Color>(json!("Blue")),
-        Err(error("", "Not matched", json!("Blue")))
-    );
-    assert_eq!(
-        decode::<Color>(json!(["red"])),
-        Err(error("", "Not a JSONString", json!(["red"])))
+        Err(error("", "Invalid variant constructor", json!("Blue")))
     );
     assert_eq!(decode::<Words>(json!(["a"])), Ok(Words(vec!["a".into()])));
-    assert_eq!(decode::<Id>(json!("x")), Ok(Id::Id("x".into())));
-    assert_eq!(Id::Id("x".into()).encode::<Plain>(), json!("x"));
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "Kind.Row", name = "t", decode_only)]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Kind.Row", name = "t", decode_only)]
 struct KindRow {
-    #[spice(name = "type_", key = "type")]
+    #[rescript(name = "type_", key = "type")]
     kind: Kind,
 }
 
@@ -270,7 +202,7 @@ fn nested_modules() {
             .nested(Module::new("Kind.Row").with::<KindRow>())
             .render(),
         "// generated
-@spice
+@spice.serde
 type kind =
   | Story
   | Scene
@@ -305,8 +237,8 @@ fn samples_cover_fields_and_constructors() {
 }
 
 // No Debug or PartialEq: std stops at 12-value tuples.
-#[derive(Spice, Clone)]
-#[spice(module = "Wide", name = "t")]
+#[derive(ReScript, Clone)]
+#[rescript(codec, module = "Wide", name = "t")]
 struct Wide {
     values: Vec<(
         i32,

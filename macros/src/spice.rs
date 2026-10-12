@@ -10,9 +10,34 @@ use syn::{
 };
 
 const RESCRIPT_KEYWORDS: &[&str] = &[
-    "and", "as", "assert", "await", "constraint", "else", "exception", "external", "false", "for",
-    "if", "in", "include", "lazy", "let", "module", "mutable", "of", "open", "private", "rec",
-    "switch", "true", "try", "type", "when", "while", "with",
+    "and",
+    "as",
+    "assert",
+    "await",
+    "constraint",
+    "else",
+    "exception",
+    "external",
+    "false",
+    "for",
+    "if",
+    "in",
+    "include",
+    "lazy",
+    "let",
+    "module",
+    "mutable",
+    "of",
+    "open",
+    "private",
+    "rec",
+    "switch",
+    "true",
+    "try",
+    "type",
+    "when",
+    "while",
+    "with",
 ];
 
 /// Keys a record field cannot have: spice reads `dict[key]`, which finds
@@ -37,14 +62,14 @@ struct ContainerAttr {
     module: Option<String>,
     name: Option<String>,
     attrs: Option<String>,
-    unboxed: bool,
     camel_case: bool,
     /// `@spice.decode` or `@spice.encode` instead of `@spice`: ReScript gets
     /// only that function (Rust gets both).
     only: Option<&'static str>,
-    /// `@spice.serde`: variants encoded like Rust's serde derive.
-    serde: bool,
-    /// `@tag(…)` with `serde`: internally tagged.
+    /// `@spice.serde({legacy: true})`: an enum's decoders also read the
+    /// default spice encoding, `["Constructor", …]`.
+    legacy: bool,
+    /// `@tag(…)`: internally tagged.
     tag: Option<String>,
     krate: Option<Path>,
     /// A polymorphic variant, `[#A | #B]`.
@@ -65,17 +90,21 @@ struct FieldAttr {
 
 #[derive(Default)]
 struct VariantAttr {
-    alias: Option<AliasValue>,
+    alias: Option<String>,
 }
 
-#[derive(Clone)]
-enum AliasValue {
-    String(String),
-    Number(f64),
+fn rescript_attrs(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
+    attrs.iter().filter(|a| a.path().is_ident("rescript"))
 }
 
-fn spice_attrs(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
-    attrs.iter().filter(|a| a.path().is_ident("spice"))
+/// Whether a container's `#[rescript(…)]` asks for a codec.
+pub fn wants_codec(attrs: &[Attribute]) -> bool {
+    use syn::{punctuated::Punctuated, Meta, Token};
+
+    rescript_attrs(attrs).any(|attr| {
+        attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .is_ok_and(|metas| metas.iter().any(|meta| meta.path().is_ident("codec")))
+    })
 }
 
 fn string(meta: &syn::meta::ParseNestedMeta) -> Result<String> {
@@ -86,9 +115,10 @@ impl ContainerAttr {
     fn parse(attrs: &[Attribute]) -> Result<Self> {
         let mut out = Self::default();
 
-        for attr in spice_attrs(attrs) {
+        for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("module") {
+                if meta.path.is_ident("codec") {
+                } else if meta.path.is_ident("module") {
                     out.module = Some(string(&meta)?);
                 } else if meta.path.is_ident("name") {
                     out.name = Some(string(&meta)?);
@@ -98,10 +128,8 @@ impl ContainerAttr {
                     out.only = Some("@spice.decode");
                 } else if meta.path.is_ident("encode_only") {
                     out.only = Some("@spice.encode");
-                } else if meta.path.is_ident("unboxed") {
-                    out.unboxed = true;
-                } else if meta.path.is_ident("serde") {
-                    out.serde = true;
+                } else if meta.path.is_ident("legacy") {
+                    out.legacy = true;
                 } else if meta.path.is_ident("poly") {
                     out.poly = true;
                 } else if meta.path.is_ident("tag") {
@@ -117,32 +145,11 @@ impl ContainerAttr {
                 } else if meta.path.is_ident("crate") {
                     out.krate = Some(meta.value()?.parse::<LitStr>()?.parse()?);
                 } else {
-                    return Err(meta.error("unknown spice attribute"));
+                    return Err(meta.error("unknown rescript attribute with codec"));
                 }
 
                 Ok(())
             })?;
-        }
-
-        if out.tag.is_some() && !out.serde {
-            return Err(Error::new(
-                Span::call_site(),
-                "tag needs serde: #[spice(serde, tag = \"…\")]",
-            ));
-        }
-
-        if out.poly && out.unboxed {
-            return Err(Error::new(
-                Span::call_site(),
-                "a polymorphic variant can't be unboxed",
-            ));
-        }
-
-        if out.serde && out.unboxed {
-            return Err(Error::new(
-                Span::call_site(),
-                "@spice.serde can't be combined with @unboxed",
-            ));
         }
 
         Ok(out)
@@ -153,7 +160,7 @@ impl FieldAttr {
     fn parse(attrs: &[Attribute]) -> Result<Self> {
         let mut out = Self::default();
 
-        for attr in spice_attrs(attrs) {
+        for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("name") {
                     out.name = Some(string(&meta)?);
@@ -172,7 +179,7 @@ impl FieldAttr {
                 } else if meta.path.is_ident("rescript_type") {
                     out.rescript_type = Some(string(&meta)?);
                 } else {
-                    return Err(meta.error("unknown spice field attribute"));
+                    return Err(meta.error("unknown rescript field attribute with codec"));
                 }
 
                 Ok(())
@@ -187,19 +194,12 @@ impl VariantAttr {
     fn parse(attrs: &[Attribute]) -> Result<Self> {
         let mut out = Self::default();
 
-        for attr in spice_attrs(attrs) {
+        for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("alias") {
-                    let lit: syn::Lit = meta.value()?.parse()?;
-
-                    out.alias = Some(match lit {
-                        syn::Lit::Str(s) => AliasValue::String(s.value()),
-                        syn::Lit::Int(i) => AliasValue::Number(i.base10_parse()?),
-                        syn::Lit::Float(f) => AliasValue::Number(f.base10_parse()?),
-                        _ => return Err(meta.error("alias is a string or a number")),
-                    });
+                if meta.path.is_ident("rename") {
+                    out.alias = Some(meta.value()?.parse::<LitStr>()?.value());
                 } else {
-                    return Err(meta.error("unknown spice variant attribute"));
+                    return Err(meta.error("unknown rescript variant attribute with codec"));
                 }
 
                 Ok(())
@@ -230,7 +230,10 @@ fn docs(attrs: &[Attribute], indent: &str) -> String {
             let line = s.value();
             let line = line.strip_prefix(' ').unwrap_or(&line);
 
-            out.push_str(&format!("{indent}//{}{line}\n", if line.is_empty() { "" } else { " " }));
+            out.push_str(&format!(
+                "{indent}//{}{line}\n",
+                if line.is_empty() { "" } else { " " }
+            ));
         }
     }
 
@@ -318,7 +321,10 @@ fn rust_default(rescript: &str, ty: &Type, span: Span) -> Result<TokenStream> {
 
     if let Some(inner) = text.strip_prefix("Some(").and_then(|t| t.strip_suffix(')')) {
         let inner_ty = option_inner(ty).ok_or_else(|| {
-            Error::new(span, "a Some(…) default needs an Option field; use rust_default")
+            Error::new(
+                span,
+                "a Some(…) default needs an Option field; use rust_default",
+            )
         })?;
         let value = rust_default(inner, inner_ty, span)?;
 
@@ -356,15 +362,17 @@ fn parse_fields(fields: &syn::FieldsNamed, camel_case: bool) -> Result<Vec<Parse
             let ident = field.ident.clone().expect("named field");
             let attr = FieldAttr::parse(&field.attrs)?;
             let raw = ident.unraw().to_string();
-            let rescript_name = attr
-                .name
-                .clone()
-                .unwrap_or_else(|| if camel_case { camel(&raw) } else { raw });
+            let rescript_name =
+                attr.name
+                    .clone()
+                    .unwrap_or_else(|| if camel_case { camel(&raw) } else { raw });
 
             if RESCRIPT_KEYWORDS.contains(&rescript_name.as_str()) {
                 return Err(Error::new(
                     field.span(),
-                    format!("`{rescript_name}` is a ReScript keyword; add name = \"{rescript_name}_\""),
+                    format!(
+                        "`{rescript_name}` is a ReScript keyword; add name = \"{rescript_name}_\""
+                    ),
                 ));
             }
 
@@ -417,10 +425,7 @@ fn field_var(ident: &Ident) -> Ident {
 
 /// The JSON name of a `@spice.serde` constructor.
 fn serde_name(v: &ParsedVariant) -> String {
-    match &v.alias {
-        Some(AliasValue::String(name)) => name.clone(),
-        _ => v.name.clone(),
-    }
+    v.alias.clone().unwrap_or_else(|| v.name.clone())
 }
 
 fn validate_serde(container: &ContainerAttr, variants: &[ParsedVariant]) -> Result<()> {
@@ -428,13 +433,6 @@ fn validate_serde(container: &ContainerAttr, variants: &[ParsedVariant]) -> Resu
 
     for v in variants {
         let span = v.variant.span();
-
-        if let Some(AliasValue::Number(_)) = v.alias {
-            return Err(Error::new(
-                span,
-                "@spice.serde needs @spice.as to be a string",
-            ));
-        }
 
         let name = serde_name(v);
 
@@ -472,7 +470,7 @@ fn validate_serde(container: &ContainerAttr, variants: &[ParsedVariant]) -> Resu
 }
 
 /// The decoder and encoder of a `@spice.serde` variant; `array_decode`
-/// reads the default spice array from `items`.
+/// reads the default spice array from `items`, given `legacy`.
 fn derive_serde(
     gen: &Gen,
     container: &ContainerAttr,
@@ -631,12 +629,25 @@ fn derive_serde(
             }
         },
     };
-    let decode = quote! {
-        match #spice::serde::shape::<H>(json)? {
-            #spice::serde::Shape::Name(name) => match name {
+    let legacy = container.legacy;
+    let names = if tag.is_none() || legacy {
+        quote! {
+            match name {
                 #(#names)*
                 _ => Err(#spice::serde::unknown(json)),
-            },
+            }
+        }
+    } else {
+        quote!(Err(#spice::serde::not_a_variant(json)))
+    };
+    let array_decode = if legacy {
+        array_decode
+    } else {
+        quote!(Err(#spice::serde::found_array(json)))
+    };
+    let decode = quote! {
+        match #spice::serde::shape::<H>(json, #legacy)? {
+            #spice::serde::Shape::Name(name) => #names,
             #spice::serde::Shape::Object(map) => { #object }
             #spice::serde::Shape::Array(items) => #array_decode,
         }
@@ -707,7 +718,11 @@ impl Gen {
         let ty = self.field_type(field);
 
         if inline {
-            let attrs = if attrs.is_empty() { attrs } else { format!("{attrs} ") };
+            let attrs = if attrs.is_empty() {
+                attrs
+            } else {
+                format!("{attrs} ")
+            };
 
             quote!(format!("{}{}: {}{}", #attrs, #name, #codec, #ty))
         } else {
@@ -752,7 +767,9 @@ impl Gen {
             let decode = self.decode_fn(field);
             let default = match (&field.attr.rust_default, &field.attr.default) {
                 (Some(expr), _) => Some(quote!(#expr)),
-                (None, Some(rescript)) => Some(rust_default(rescript, &field.ty, field.ident.span())?),
+                (None, Some(rescript)) => {
+                    Some(rust_default(rescript, &field.ty, field.ident.span())?)
+                }
                 (None, None) => None,
             };
 
@@ -823,7 +840,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     check_tuples(&input.data)?;
 
     if !input.generics.params.is_empty() {
-        return Err(Error::new(input.generics.span(), "Spice types cannot be generic yet"));
+        return Err(Error::new(
+            input.generics.span(),
+            "Spice types cannot be generic yet",
+        ));
     }
 
     let ident = &input.ident;
@@ -838,10 +858,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let samples = samples(&gen, &input.data)?;
     let (body, decode, encode) = match &input.data {
-        Data::Struct(_) if container.serde => {
+        Data::Struct(_) if container.tag.is_some() || container.legacy || container.poly => {
             return Err(Error::new(
                 input.span(),
-                "serde is for enums; a struct is a record either way",
+                "tag, legacy and poly are for enums",
             ))
         }
         Data::Struct(data) => derive_struct(&gen, &container, data, ident)?,
@@ -851,21 +871,20 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let mut header = docs(&input.attrs, "");
 
-    header.push_str(
-        match (container.serde, container.only) {
-            (true, Some(only)) => format!("@spice.serde {only}"),
-            (true, None) => "@spice.serde".into(),
-            (false, only) => only.unwrap_or("@spice").into(),
-        }
-        .as_str(),
-    );
+    let codec = match (&input.data, container.legacy) {
+        (Data::Enum(_), true) => "@spice.serde({legacy: true})",
+        (Data::Enum(_), false) => "@spice.serde",
+        _ => "@spice",
+    };
+
+    header.push_str(&match container.only {
+        Some(only) if codec == "@spice" => only.to_string(),
+        Some(only) => format!("{codec} {only}"),
+        None => codec.to_string(),
+    });
 
     if let Some(tag) = &container.tag {
         header.push_str(&format!(" @tag({tag:?})"));
-    }
-
-    if container.unboxed {
-        header.push_str(" @unboxed");
     }
 
     if let Some(attrs) = &container.attrs {
@@ -938,17 +957,20 @@ fn check_tuples(data: &Data) -> Result<()> {
             Type::Tuple(tuple) => tuple.elems.iter().try_for_each(check),
             Type::Paren(inner) => check(&inner.elem),
             Type::Group(inner) => check(&inner.elem),
-            Type::Path(path) => path.path.segments.iter().try_for_each(|segment| {
-                match &segment.arguments {
-                    PathArguments::AngleBracketed(args) => {
-                        args.args.iter().try_for_each(|arg| match arg {
-                            GenericArgument::Type(ty) => check(ty),
-                            _ => Ok(()),
-                        })
-                    }
-                    _ => Ok(()),
-                }
-            }),
+            Type::Path(path) => {
+                path.path
+                    .segments
+                    .iter()
+                    .try_for_each(|segment| match &segment.arguments {
+                        PathArguments::AngleBracketed(args) => {
+                            args.args.iter().try_for_each(|arg| match arg {
+                                GenericArgument::Type(ty) => check(ty),
+                                _ => Ok(()),
+                            })
+                        }
+                        _ => Ok(()),
+                    })
+            }
             _ => Ok(()),
         }
     }
@@ -996,10 +1018,6 @@ fn derive_struct(
 
     match &data.fields {
         Fields::Named(named) => {
-            if container.unboxed {
-                return Err(Error::new(named.span(), "unboxed records are not supported"));
-            }
-
             let fields = parse_fields(named, container.camel_case)?;
             let lines = fields.iter().map(|f| gen.field_declaration(f, false));
             let body = quote!(format!(" {{\n{}}}", [#(#lines),*].concat()));
@@ -1036,23 +1054,8 @@ struct ParsedVariant<'a> {
     variant: &'a syn::Variant,
     /// The ReScript constructor, which is also its name in JSON.
     name: String,
-    alias: Option<AliasValue>,
+    alias: Option<String>,
     fields: Option<Vec<ParsedField>>,
-}
-
-fn alias_json(spice: &TokenStream, alias: &AliasValue) -> TokenStream {
-    match alias {
-        AliasValue::String(s) => quote!(#spice::Value::String(::std::string::String::from(#s))),
-        AliasValue::Number(n) => quote!(H::number(#n)),
-    }
-}
-
-fn alias_rescript(alias: &AliasValue) -> String {
-    match alias {
-        AliasValue::String(s) => format!("{s:?}"),
-        AliasValue::Number(n) if n.fract() == 0.0 => format!("{}", *n as i64),
-        AliasValue::Number(n) => format!("{n}"),
-    }
 }
 
 fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Result<Derived> {
@@ -1082,30 +1085,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let aliased = variants.iter().filter(|v| v.alias.is_some()).count();
-
-    if container.serde {
-        validate_serde(container, &variants)?;
-    }
-
-    if aliased > 0 && !container.serde && aliased != variants.len() {
-        return Err(Error::new(
-            data.variants.span(),
-            "Partial @spice.as usage is not allowed",
-        ));
-    }
-
-    if aliased > 0
-        && !container.serde
-        && variants
-            .iter()
-            .any(|v| !matches!(v.variant.fields, Fields::Unit))
-    {
-        return Err(Error::new(
-            data.variants.span(),
-            "@spice.as is only supported on constructors without payload",
-        ));
-    }
+    validate_serde(container, &variants)?;
 
     let mut lines = vec![];
 
@@ -1115,7 +1095,11 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         let alias = v
             .alias
             .as_ref()
-            .map(|a| format!("@spice.as({}) ", alias_rescript(a)))
+            .map(|a| match container.poly {
+                // ReScript has no @as on polymorphic variants.
+                true => format!("@spice.as({a:?}) "),
+                false => format!("@as({a:?}) "),
+            })
             .unwrap_or_default();
 
         lines.push(match &v.variant.fields {
@@ -1144,21 +1128,12 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         quote!(format!("\n{}", [#(#lines),*].concat().trim_end()))
     };
 
-    if container.unboxed {
-        return derive_unboxed_enum(gen, &variants, body);
-    }
-
-    if aliased > 0 && !container.serde {
-        return Ok(derive_alias_enum(gen, &variants, body));
-    }
-
     let kind = if container.poly {
         quote!(#spice::variant::Kind::Poly)
     } else {
         quote!(#spice::variant::Kind::Variant)
     };
     let mut decode_cases = vec![];
-    let mut encode_cases = vec![];
 
     for v in &variants {
         let constructor = &v.variant.ident;
@@ -1172,9 +1147,6 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
 
                         Ok(Self::#constructor)
                     }
-                });
-                encode_cases.push(quote! {
-                    Self::#constructor => #spice::Value::Array(vec![#spice::Value::String(::std::string::String::from(#tag))]),
                 });
             }
             Fields::Unnamed(unnamed) => {
@@ -1201,20 +1173,12 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                         Ok(Self::#constructor(#(#finishes),*))
                     }
                 });
-                encode_cases.push(quote! {
-                    Self::#constructor(#(#vars),*) => #spice::Value::Array(vec![
-                        #spice::Value::String(::std::string::String::from(#tag)),
-                        #(#spice::Spice::encode::<H>(#vars)),*
-                    ]),
-                });
             }
             Fields::Named(_) => {
                 let fields = v.fields.as_ref().expect("named");
                 let decode_fields = gen.decode_fields(fields, quote!(payload))?;
                 let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
                 let vars: Vec<Ident> = fields.iter().map(|f| field_var(&f.ident)).collect();
-                let object = gen.encode_fields(fields, |field| quote!(#field));
-
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
                         #spice::variant::arity_of(#kind, &items, 1, json)?;
@@ -1231,12 +1195,6 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                         decoded.map_err(|error| error.prefixed("[1]"))
                     }
                 });
-                encode_cases.push(quote! {
-                    Self::#constructor { #(#idents),* } => #spice::Value::Array(vec![
-                        #spice::Value::String(::std::string::String::from(#tag)),
-                        #object,
-                    ]),
-                });
             }
         }
     }
@@ -1248,98 +1206,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         }
     };
 
-    if container.serde {
-        let (decode, encode) = derive_serde(gen, container, &variants, array_decode)?;
-
-        return Ok((body, decode, encode));
-    }
-
-    let decode = quote! {
-        let items = #spice::variant::items_of::<H>(#kind, json)?;
-
-        #array_decode
-    };
-    let encode = quote! {
-        match self {
-            #(#encode_cases)*
-        }
-    };
-
-    Ok((body, decode, encode))
-}
-
-fn derive_alias_enum(gen: &Gen, variants: &[ParsedVariant], body: TokenStream) -> Derived {
-    let spice = gen.spice();
-    let strings = variants.iter().filter_map(|v| match &v.alias {
-        Some(AliasValue::String(s)) => {
-            let constructor = &v.variant.ident;
-
-            Some(quote!(#s => Ok(Self::#constructor),))
-        }
-        _ => None,
-    });
-    let numbers = variants.iter().filter_map(|v| match &v.alias {
-        Some(AliasValue::Number(n)) => {
-            let constructor = &v.variant.ident;
-
-            Some(quote!(n if n == #n => Ok(Self::#constructor),))
-        }
-        _ => None,
-    });
-    let encodes = variants.iter().map(|v| {
-        let constructor = &v.variant.ident;
-        let json = alias_json(&spice, v.alias.as_ref().expect("aliased"));
-
-        quote!(Self::#constructor => #json,)
-    });
-
-    let decode = quote! {
-        match #spice::variant::alias::<H>(json)? {
-            #spice::variant::Alias::String(s) => match s {
-                #(#strings)*
-                _ => Err(#spice::variant::not_matched(json)),
-            },
-            #spice::variant::Alias::Number(n) => match n {
-                #(#numbers)*
-                _ => Err(#spice::variant::not_matched(json)),
-            },
-        }
-    };
-    let encode = quote! {
-        match self {
-            #(#encodes)*
-        }
-    };
-
-    (body, decode, encode)
-}
-
-fn derive_unboxed_enum(gen: &Gen, variants: &[ParsedVariant], body: TokenStream) -> Result<Derived> {
-    let spice = gen.spice();
-
-    let [variant] = variants else {
-        return Err(Error::new(Span::call_site(), "an unboxed variant has one constructor"));
-    };
-
-    let Fields::Unnamed(unnamed) = &variant.variant.fields else {
-        return Err(Error::new(
-            variant.variant.span(),
-            "an unboxed constructor has one unnamed payload",
-        ));
-    };
-
-    if unnamed.unnamed.len() != 1 {
-        return Err(Error::new(unnamed.span(), "Expected exactly one type argument"));
-    }
-
-    let ty = &unnamed.unnamed[0].ty;
-    let constructor = &variant.variant.ident;
-    let decode = quote!(<#ty as #spice::Spice>::decode::<H>(json).map(Self::#constructor));
-    let encode = quote! {
-        match self {
-            Self::#constructor(v) => #spice::Spice::encode::<H>(v),
-        }
-    };
+    let (decode, encode) = derive_serde(gen, container, &variants, array_decode)?;
 
     Ok((body, decode, encode))
 }
@@ -1412,12 +1279,17 @@ fn samples(gen: &Gen, data: &Data) -> Result<TokenStream> {
                         Ok((quote!(#ident), &f.ty, attr.with))
                     })
                     .collect::<Result<_>>()?;
-                let refs: Vec<_> = fields.iter().map(|(i, t, w)| (i.clone(), *t, w.as_ref())).collect();
+                let refs: Vec<_> = fields
+                    .iter()
+                    .map(|(i, t, w)| (i.clone(), *t, w.as_ref()))
+                    .collect();
                 let names: Vec<TokenStream> = fields.iter().map(|(i, _, _)| i.clone()).collect();
 
-                Ok(record_samples(gen, &refs, |values| {
-                    quote!(Self { #(#names: #values),* })
-                }))
+                Ok(record_samples(
+                    gen,
+                    &refs,
+                    |values| quote!(Self { #(#names: #values),* }),
+                ))
             }
             Fields::Unnamed(unnamed) => {
                 let ty = &unnamed.unnamed[0].ty;
@@ -1441,9 +1313,11 @@ fn samples(gen: &Gen, data: &Data) -> Result<TokenStream> {
                             .iter()
                             .map(|f| (quote!(), &f.ty, None))
                             .collect();
-                        let samples = record_samples(gen, &fields, |values| {
-                            quote!(Self::#constructor(#(#values),*))
-                        });
+                        let samples = record_samples(
+                            gen,
+                            &fields,
+                            |values| quote!(Self::#constructor(#(#values),*)),
+                        );
 
                         quote!(out.extend(#samples);)
                     }
@@ -1463,9 +1337,11 @@ fn samples(gen: &Gen, data: &Data) -> Result<TokenStream> {
                             .map(|(i, t, w)| (quote!(#i), *t, w.as_ref()))
                             .collect();
                         let names: Vec<&Ident> = parsed.iter().map(|(i, _, _)| i).collect();
-                        let samples = record_samples(gen, &fields, |values| {
-                            quote!(Self::#constructor { #(#names: #values),* })
-                        });
+                        let samples = record_samples(
+                            gen,
+                            &fields,
+                            |values| quote!(Self::#constructor { #(#names: #values),* }),
+                        );
 
                         quote!(out.extend(#samples);)
                     }
