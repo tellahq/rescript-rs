@@ -615,3 +615,69 @@ fn rejected_internally_tagged() {
         (json!(["Point", 1]), ("[1]", "Not an object", json!(1))),
     ]);
 }
+
+/// A polymorphic variant in serde mode.
+#[derive(Spice, Debug, Clone, Copy, PartialEq)]
+#[spice(module = "SerdeSize", name = "t", serde, poly)]
+pub enum Size {
+    S,
+    M,
+    #[spice(alias = "large")]
+    L,
+}
+
+#[derive(Spice, Debug, Clone, PartialEq)]
+#[spice(module = "SerdeSized", name = "t", serde, tag = "type")]
+pub enum Sized {
+    Box { size: Size },
+    Bare,
+}
+
+/// The default spice encoding of a polymorphic variant.
+#[derive(Spice, Debug, Clone, PartialEq)]
+#[spice(module = "SerdePoly", name = "t", poly)]
+pub enum Poly {
+    A,
+    B(i32, String),
+}
+
+#[test]
+fn polymorphic_variants() {
+    assert_eq!(
+        Size::declaration(),
+        "// A polymorphic variant in serde mode.\n@spice.serde\ntype t = [\n  | #S\n  | #M\n  | @spice.as(\"large\") #L\n]"
+    );
+    assert_eq!(
+        Sized::declaration(),
+        "@spice.serde @tag(\"type\")\ntype t =\n  | Box({size: SerdeSize.t})\n  | Bare"
+    );
+    assert_eq!(Poly::declaration(), "// The default spice encoding of a polymorphic variant.\n@spice\ntype t = [\n  | #A\n  | #B(int, string)\n]");
+
+    for (value, encoded) in [
+        (Sized::Box { size: Size::S }, json!({"type": "Box", "size": "S"})),
+        (Sized::Box { size: Size::L }, json!({"type": "Box", "size": "large"})),
+        (Sized::Bare, json!({"type": "Bare"})),
+    ] {
+        assert_eq!(value.encode::<Plain>(), encoded);
+        assert_eq!(decode::<Sized>(encoded), Ok(value));
+    }
+
+    assert_eq!(decode::<Size>(json!(["M"])), Ok(Size::M));
+    assert_eq!(Poly::B(1, "b".into()).encode::<Plain>(), json!(["B", 1, "b"]));
+    assert_eq!(decode::<Poly>(json!(["B", 1, "b"])), Ok(Poly::B(1, "b".into())));
+    errors::<Sized>(&[
+        (json!({"type": "Circle"}), ("", "Invalid variant constructor", json!({"type": "Circle"}))),
+        (json!({"type": "Box", "size": "Small"}), (".size", "Invalid variant constructor", json!("Small"))),
+    ]);
+    errors::<Poly>(&[
+        (json!(["C", 1, "b"]), ("", "Invalid polymorphic variant constructor", json!("C"))),
+        (json!(["A", 1]), ("", "Invalid number of arguments to polyvariant constructor", json!(["A", 1]))),
+        (json!("A"), ("", "Not a polyvariant", json!("A"))),
+        (json!([]), ("", "Expected polyvariant, found empty array", json!([]))),
+    ]);
+    // In serde mode only the legacy arrays use the polymorphic wording.
+    errors::<Size>(&[
+        (json!(["Small"]), ("", "Invalid polymorphic variant constructor", json!("Small"))),
+        (json!("Small"), ("", "Invalid variant constructor", json!("Small"))),
+    ]);
+}

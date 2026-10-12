@@ -147,8 +147,8 @@ fn records() {
         }
     );
     assert_eq!(
-        decoded.encode::<Plain>().to_string(),
-        r#"{"PK":"a","type":["Story"],"count":2,"words":[],"note":"n","scale":1.5,"tags":{"1":false,"b":true},"parent":null}"#
+        decoded.encode::<Plain>(),
+        json!({"PK": "a", "type": ["Story"], "count": 2, "words": [], "note": "n", "scale": 1.5, "tags": {"1": false, "b": true}, "parent": null})
     );
 }
 

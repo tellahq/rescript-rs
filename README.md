@@ -89,7 +89,8 @@ type t = {
 }
 ```
 
-Container attributes: `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `unboxed`,
+Container attributes: `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `unboxed`, `poly` (a
+polymorphic variant, `[#A | #B]`; its JSON is a variant's),
 `decode_only`, `encode_only`, `rename_all = "camelCase"`. Field attributes: `name` (the ReScript field), `key`
 (`@spice.key`), `default` (`@spice.default`, a ReScript expression; simple literals and constructors are translated,
 otherwise add `rust_default`), `optional` (`field?:`), `codec` + `with` (`@spice.codec` and the Rust module with
