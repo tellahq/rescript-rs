@@ -103,8 +103,8 @@ type t =
         Color::declaration(),
         "@spice.serde @genType
 type t =
-  | @spice.as(\"red\") Red
-  | @spice.as(\"dark-blue\") Blue"
+  | @as(\"red\") Red
+  | @as(\"dark-blue\") Blue"
     );
     assert_eq!(Words::declaration(), "@spice\ntype t = array<string>");
     assert_eq!(

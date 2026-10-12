@@ -188,16 +188,16 @@ type rec t =
   | Unit
   | Point(SerdePoint.t)
   | Rec({a: int, b?: string})
-  | @spice.as(\"full\") Full({screenFit: string, punch_in: bool})
+  | @as(\"full\") Full({screenFit: string, punch_in: bool})
   | Tree({children: array<SerdeInt.t>})"
     );
     assert_eq!(
         Names::declaration(),
         "@spice.serde({legacy: true})
 type t =
-  | @spice.as(\"하나\") Hana
-  | @spice.as(\"with space\") Space
-  | @spice.as(\"\") Empty"
+  | @as(\"하나\") Hana
+  | @as(\"with space\") Space
+  | @as(\"\") Empty"
     );
     assert!(DecodeOnly::declaration()
         .starts_with("@spice.serde({legacy: true}) @spice.decode\ntype t ="));
@@ -306,7 +306,7 @@ fn legacy_arrays_still_decode() {
         decode::<Ext>(json!(["Two", 1, "a"])),
         Ok(Ext::Two(1, "a".into()))
     );
-    // The array names the constructor, not its @spice.as name.
+    // The array names the constructor, not its renamed one.
     assert_eq!(
         decode::<Ext>(json!(["Full", {"punch_in": true}])),
         Ok(Ext::Full { punch_in: true })

@@ -1095,7 +1095,11 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         let alias = v
             .alias
             .as_ref()
-            .map(|a| format!("@spice.as({a:?}) "))
+            .map(|a| match container.poly {
+                // ReScript has no @as on polymorphic variants.
+                true => format!("@spice.as({a:?}) "),
+                false => format!("@as({a:?}) "),
+            })
             .unwrap_or_default();
 
         lines.push(match &v.variant.fields {

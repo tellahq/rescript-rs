@@ -113,7 +113,8 @@ Container attributes: `codec`, `module`, `name`, `attrs` (extra ReScript attribu
 Field attributes: `name` (the ReScript field), `key` (`@spice.key`), `default` (`@spice.default`, a ReScript
 expression; simple literals and constructors are translated, otherwise add `rust_default`), `optional` (`field?:`),
 `codec` + `with` (`@spice.codec` and the Rust module with `decode`/`encode`/`samples`). Variant attribute: `rename`
-(the JSON name, `@spice.as`). A `Host` says how values JSON cannot hold (`Infinity`, `bigint`, `Set`) stand in a
+(ReScript's `@as`, which names the constructor in memory and in JSON; `@spice.as`, the JSON name only, on a
+polymorphic variant, which ReScript can't rename). A `Host` says how values JSON cannot hold (`Infinity`, `bigint`, `Set`) stand in a
 `serde_json::Value`. `Spice::samples` and `Module::codecs` exist to test a type's Rust codec against the ReScript
 one.
 
