@@ -119,8 +119,6 @@ use std::{
 
 pub use rescript_rs_macros::ReScript;
 pub use rescript_rs_macros::ReScript as TS;
-#[cfg(feature = "spice")]
-pub use rescript_rs_macros::Spice;
 
 pub use crate::export::ExportError;
 

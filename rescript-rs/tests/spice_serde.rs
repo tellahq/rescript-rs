@@ -2,23 +2,23 @@
 
 use rescript_rs::{
     spice::{Declare, DecodeError, Dict, Failure, Null, Plain, Spice},
-    Spice,
+    ReScript,
 };
 use serde_json::{json, Value};
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdePoint", name = "t")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "SerdePoint", name = "t")]
 pub struct Point {
     pub x: i32,
     pub y: i32,
 }
 
 /// Externally tagged.
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeExt", name = "t", serde)]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeExt", name = "t")]
 pub enum Ext {
     Unit,
-    #[spice(alias = "renamed")]
+    #[rescript(rename = "renamed")]
     Renamed,
     One(i32),
     Two(i32, String),
@@ -26,9 +26,9 @@ pub enum Ext {
         a: i32,
         b: Option<String>,
     },
-    #[spice(alias = "full")]
+    #[rescript(rename = "full")]
     Full {
-        #[spice(key = "punch_in")]
+        #[rescript(key = "punch_in")]
         punch_in: bool,
     },
     Opt(Option<i32>),
@@ -39,21 +39,21 @@ pub enum Ext {
 }
 
 /// Internally tagged.
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeInt", name = "t", serde, tag = "type")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeInt", name = "t", tag = "type")]
 pub enum Int {
     Unit,
     Point(Point),
     Rec {
         a: i32,
-        #[spice(optional)]
+        #[rescript(optional)]
         b: Option<String>,
     },
-    #[spice(alias = "full")]
+    #[rescript(rename = "full")]
     Full {
-        #[spice(name = "screenFit")]
+        #[rescript(name = "screenFit")]
         screen_fit: String,
-        #[spice(key = "punch_in")]
+        #[rescript(key = "punch_in")]
         punch_in: bool,
     },
     Tree {
@@ -62,8 +62,8 @@ pub enum Int {
 }
 
 /// Field names that are also the generated decoder's locals.
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeClash", name = "t", serde)]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeClash", name = "t")]
 pub enum Clash {
     Clash {
         json: i32,
@@ -75,8 +75,8 @@ pub enum Clash {
     },
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeClashTagged", name = "t", serde, tag = "kind")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeClashTagged", name = "t", tag = "kind")]
 pub enum ClashTagged {
     Clash {
         json: i32,
@@ -88,19 +88,19 @@ pub enum ClashTagged {
     },
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeFields", name = "t", serde, tag = "type")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeFields", name = "t", tag = "type")]
 pub enum Fields {
     Fields {
-        #[spice(default = "7")]
+        #[rescript(default = "7")]
         count: i32,
-        #[spice(optional)]
+        #[rescript(optional)]
         optional: Option<String>,
         nullable: Null<i32>,
         tuple: (i32, String),
         result: Result<i32, String>,
         dict: Dict<bool>,
-        #[spice(codec = "Upper.codec", with = "upper")]
+        #[rescript(codec = "Upper.codec", with = "upper")]
         upper: String,
     },
 }
@@ -124,29 +124,30 @@ pub mod upper {
     }
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeNames", name = "t", serde)]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeNames", name = "t")]
 pub enum Names {
-    #[spice(alias = "하나")]
+    #[rescript(rename = "하나")]
     Hana,
-    #[spice(alias = "with space")]
+    #[rescript(rename = "with space")]
     Space,
-    #[spice(alias = "")]
+    #[rescript(rename = "")]
     Empty,
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeDecodeOnly", name = "t", serde, decode_only)]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeDecodeOnly", name = "t", decode_only)]
 pub enum DecodeOnly {
     D1,
     D2(i32),
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(
+    codec,
+    legacy,
     module = "SerdeEncodeOnly",
     name = "t",
-    serde,
     tag = "type",
     encode_only
 )]
@@ -182,7 +183,7 @@ fn declarations() {
     assert_eq!(
         Int::declaration(),
         "// Internally tagged.
-@spice.serde @tag(\"type\")
+@spice.serde({legacy: true}) @tag(\"type\")
 type rec t =
   | Unit
   | Point(SerdePoint.t)
@@ -192,15 +193,16 @@ type rec t =
     );
     assert_eq!(
         Names::declaration(),
-        "@spice.serde
+        "@spice.serde({legacy: true})
 type t =
   | @spice.as(\"하나\") Hana
   | @spice.as(\"with space\") Space
   | @spice.as(\"\") Empty"
     );
-    assert!(DecodeOnly::declaration().starts_with("@spice.serde @spice.decode\ntype t ="));
+    assert!(DecodeOnly::declaration()
+        .starts_with("@spice.serde({legacy: true}) @spice.decode\ntype t ="));
     assert!(EncodeOnly::declaration()
-        .starts_with("@spice.serde @spice.encode @tag(\"type\")\ntype t ="));
+        .starts_with("@spice.serde({legacy: true}) @spice.encode @tag(\"type\")\ntype t ="));
 }
 
 #[test]
@@ -288,8 +290,8 @@ fn internally_tagged() {
 #[test]
 #[should_panic(expected = "its payload doesn't encode to an object")]
 fn a_tagged_value_that_is_not_an_object_panics() {
-    #[derive(Spice, Debug, Clone, PartialEq)]
-    #[spice(serde, tag = "type")]
+    #[derive(ReScript, Debug, Clone, PartialEq)]
+    #[rescript(codec, legacy, tag = "type")]
     enum Bad {
         Number(i32),
     }
@@ -617,25 +619,25 @@ fn rejected_internally_tagged() {
 }
 
 /// A polymorphic variant in serde mode.
-#[derive(Spice, Debug, Clone, Copy, PartialEq)]
-#[spice(module = "SerdeSize", name = "t", serde, poly)]
+#[derive(ReScript, Debug, Clone, Copy, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeSize", name = "t", poly)]
 pub enum Size {
     S,
     M,
-    #[spice(alias = "large")]
+    #[rescript(rename = "large")]
     L,
 }
 
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeSized", name = "t", serde, tag = "type")]
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdeSized", name = "t", tag = "type")]
 pub enum Sized {
     Box { size: Size },
     Bare,
 }
 
-/// The default spice encoding of a polymorphic variant.
-#[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdePoly", name = "t", poly)]
+/// A polymorphic variant that also reads the default spice encoding.
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "SerdePoly", name = "t", poly)]
 pub enum Poly {
     A,
     B(i32, String),
@@ -645,17 +647,23 @@ pub enum Poly {
 fn polymorphic_variants() {
     assert_eq!(
         Size::declaration(),
-        "// A polymorphic variant in serde mode.\n@spice.serde\ntype t = [\n  | #S\n  | #M\n  | @spice.as(\"large\") #L\n]"
+        "// A polymorphic variant in serde mode.\n@spice.serde({legacy: true})\ntype t = [\n  | #S\n  | #M\n  | @spice.as(\"large\") #L\n]"
     );
     assert_eq!(
         Sized::declaration(),
-        "@spice.serde @tag(\"type\")\ntype t =\n  | Box({size: SerdeSize.t})\n  | Bare"
+        "@spice.serde({legacy: true}) @tag(\"type\")\ntype t =\n  | Box({size: SerdeSize.t})\n  | Bare"
     );
-    assert_eq!(Poly::declaration(), "// The default spice encoding of a polymorphic variant.\n@spice\ntype t = [\n  | #A\n  | #B(int, string)\n]");
+    assert_eq!(Poly::declaration(), "// A polymorphic variant that also reads the default spice encoding.\n@spice.serde({legacy: true})\ntype t = [\n  | #A\n  | #B(int, string)\n]");
 
     for (value, encoded) in [
-        (Sized::Box { size: Size::S }, json!({"type": "Box", "size": "S"})),
-        (Sized::Box { size: Size::L }, json!({"type": "Box", "size": "large"})),
+        (
+            Sized::Box { size: Size::S },
+            json!({"type": "Box", "size": "S"}),
+        ),
+        (
+            Sized::Box { size: Size::L },
+            json!({"type": "Box", "size": "large"}),
+        ),
         (Sized::Bare, json!({"type": "Bare"})),
     ] {
         assert_eq!(value.encode::<Plain>(), encoded);
@@ -663,21 +671,107 @@ fn polymorphic_variants() {
     }
 
     assert_eq!(decode::<Size>(json!(["M"])), Ok(Size::M));
-    assert_eq!(Poly::B(1, "b".into()).encode::<Plain>(), json!(["B", 1, "b"]));
-    assert_eq!(decode::<Poly>(json!(["B", 1, "b"])), Ok(Poly::B(1, "b".into())));
+    assert_eq!(
+        Poly::B(1, "b".into()).encode::<Plain>(),
+        json!({"B": [1, "b"]})
+    );
+    assert_eq!(
+        decode::<Poly>(json!(["B", 1, "b"])),
+        Ok(Poly::B(1, "b".into()))
+    );
     errors::<Sized>(&[
-        (json!({"type": "Circle"}), ("", "Invalid variant constructor", json!({"type": "Circle"}))),
-        (json!({"type": "Box", "size": "Small"}), (".size", "Invalid variant constructor", json!("Small"))),
+        (
+            json!({"type": "Circle"}),
+            ("", "Invalid variant constructor", json!({"type": "Circle"})),
+        ),
+        (
+            json!({"type": "Box", "size": "Small"}),
+            (".size", "Invalid variant constructor", json!("Small")),
+        ),
     ]);
     errors::<Poly>(&[
-        (json!(["C", 1, "b"]), ("", "Invalid polymorphic variant constructor", json!("C"))),
-        (json!(["A", 1]), ("", "Invalid number of arguments to polyvariant constructor", json!(["A", 1]))),
-        (json!("A"), ("", "Not a polyvariant", json!("A"))),
-        (json!([]), ("", "Expected polyvariant, found empty array", json!([]))),
+        (
+            json!(["C", 1, "b"]),
+            ("", "Invalid polymorphic variant constructor", json!("C")),
+        ),
+        (
+            json!(["A", 1]),
+            (
+                "",
+                "Invalid number of arguments to polyvariant constructor",
+                json!(["A", 1]),
+            ),
+        ),
+        (
+            json!([]),
+            ("", "Expected variant, found empty array", json!([])),
+        ),
     ]);
     // In serde mode only the legacy arrays use the polymorphic wording.
     errors::<Size>(&[
-        (json!(["Small"]), ("", "Invalid polymorphic variant constructor", json!("Small"))),
-        (json!("Small"), ("", "Invalid variant constructor", json!("Small"))),
+        (
+            json!(["Small"]),
+            (
+                "",
+                "Invalid polymorphic variant constructor",
+                json!("Small"),
+            ),
+        ),
+        (
+            json!("Small"),
+            ("", "Invalid variant constructor", json!("Small")),
+        ),
+    ]);
+}
+
+/// Without `legacy`, like the ppx's `@spice.serde`.
+#[derive(ReScript, Debug, Clone, Copy, PartialEq)]
+#[rescript(codec, module = "SerdeStrictPoly", name = "t", poly)]
+pub enum StrictPoly {
+    Left,
+    Payload(i32),
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "SerdeStrictExt", name = "t")]
+pub enum StrictExt {
+    Unit,
+    Single(i32),
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "SerdeStrictInt", name = "t", tag = "type")]
+pub enum StrictInt {
+    Regular,
+    Overlap { size: i32 },
+}
+
+#[test]
+fn without_legacy_only_the_serde_form_decodes() {
+    assert!(StrictInt::declaration().starts_with("@spice.serde @tag(\"type\")\ntype t ="));
+    assert_eq!(decode::<StrictPoly>(json!("Left")), Ok(StrictPoly::Left));
+    assert_eq!(
+        decode::<StrictPoly>(json!({"Payload": 3})),
+        Ok(StrictPoly::Payload(3))
+    );
+    assert_eq!(decode::<StrictExt>(json!("Unit")), Ok(StrictExt::Unit));
+    assert_eq!(
+        decode::<StrictInt>(json!({"type": "Regular"})),
+        Ok(StrictInt::Regular)
+    );
+
+    let array = "Expected variant, found array";
+
+    errors::<StrictPoly>(&[(json!(["Payload", 3]), ("", array, json!(["Payload", 3])))]);
+    errors::<StrictExt>(&[
+        (json!(["Single", 1]), ("", array, json!(["Single", 1]))),
+        (json!([]), ("", array, json!([]))),
+    ]);
+    errors::<StrictInt>(&[
+        (json!("Regular"), ("", "Not a variant", json!("Regular"))),
+        (
+            json!(["Overlap", {"size": 1}]),
+            ("", array, json!(["Overlap", {"size": 1}])),
+        ),
     ]);
 }
