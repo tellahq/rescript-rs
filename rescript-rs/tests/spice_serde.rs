@@ -616,25 +616,21 @@ fn rejected_internally_tagged() {
     ]);
 }
 
-/// A polymorphic variant whose ReScript constructors differ from Rust's.
+/// A polymorphic variant in serde mode.
 #[derive(Spice, Debug, Clone, Copy, PartialEq)]
 #[spice(module = "SerdeSize", name = "t", serde, poly)]
 pub enum Size {
-    #[spice(name = "S")]
-    Small,
-    #[spice(name = "M")]
-    Medium,
+    S,
+    M,
     #[spice(alias = "large")]
-    Large,
+    L,
 }
 
 #[derive(Spice, Debug, Clone, PartialEq)]
-#[spice(module = "SerdeRenamed", name = "t", serde, tag = "type")]
-pub enum Renamed {
-    #[spice(name = "TVPresenter")]
-    TvPresenter { size: Size },
-    #[spice(name = "Bare")]
-    Plain,
+#[spice(module = "SerdeSized", name = "t", serde, tag = "type")]
+pub enum Sized {
+    Box { size: Size },
+    Bare,
 }
 
 /// The default spice encoding of a polymorphic variant.
@@ -642,40 +638,39 @@ pub enum Renamed {
 #[spice(module = "SerdePoly", name = "t", poly)]
 pub enum Poly {
     A,
-    #[spice(name = "Bee")]
     B(i32, String),
 }
 
 #[test]
-fn constructor_names_and_polymorphic_variants() {
+fn polymorphic_variants() {
     assert_eq!(
         Size::declaration(),
-        "// A polymorphic variant whose ReScript constructors differ from Rust's.\n@spice.serde\ntype t = [\n  | #S\n  | #M\n  | @spice.as(\"large\") #Large\n]"
+        "// A polymorphic variant in serde mode.\n@spice.serde\ntype t = [\n  | #S\n  | #M\n  | @spice.as(\"large\") #L\n]"
     );
     assert_eq!(
-        Renamed::declaration(),
-        "@spice.serde @tag(\"type\")\ntype t =\n  | TVPresenter({size: SerdeSize.t})\n  | Bare"
+        Sized::declaration(),
+        "@spice.serde @tag(\"type\")\ntype t =\n  | Box({size: SerdeSize.t})\n  | Bare"
     );
-    assert_eq!(Poly::declaration(), "// The default spice encoding of a polymorphic variant.\n@spice\ntype t = [\n  | #A\n  | #Bee(int, string)\n]");
+    assert_eq!(Poly::declaration(), "// The default spice encoding of a polymorphic variant.\n@spice\ntype t = [\n  | #A\n  | #B(int, string)\n]");
 
     for (value, encoded) in [
-        (Renamed::TvPresenter { size: Size::Small }, json!({"type": "TVPresenter", "size": "S"})),
-        (Renamed::TvPresenter { size: Size::Large }, json!({"type": "TVPresenter", "size": "large"})),
-        (Renamed::Plain, json!({"type": "Bare"})),
+        (Sized::Box { size: Size::S }, json!({"type": "Box", "size": "S"})),
+        (Sized::Box { size: Size::L }, json!({"type": "Box", "size": "large"})),
+        (Sized::Bare, json!({"type": "Bare"})),
     ] {
         assert_eq!(value.encode::<Plain>(), encoded);
-        assert_eq!(decode::<Renamed>(encoded), Ok(value));
+        assert_eq!(decode::<Sized>(encoded), Ok(value));
     }
 
-    assert_eq!(decode::<Size>(json!(["M"])), Ok(Size::Medium));
-    assert_eq!(Poly::B(1, "b".into()).encode::<Plain>(), json!(["Bee", 1, "b"]));
-    assert_eq!(decode::<Poly>(json!(["Bee", 1, "b"])), Ok(Poly::B(1, "b".into())));
-    errors::<Renamed>(&[
-        (json!({"type": "TvPresenter"}), ("", "Invalid variant constructor", json!({"type": "TvPresenter"}))),
-        (json!({"type": "TVPresenter", "size": "Small"}), (".size", "Invalid variant constructor", json!("Small"))),
+    assert_eq!(decode::<Size>(json!(["M"])), Ok(Size::M));
+    assert_eq!(Poly::B(1, "b".into()).encode::<Plain>(), json!(["B", 1, "b"]));
+    assert_eq!(decode::<Poly>(json!(["B", 1, "b"])), Ok(Poly::B(1, "b".into())));
+    errors::<Sized>(&[
+        (json!({"type": "Circle"}), ("", "Invalid variant constructor", json!({"type": "Circle"}))),
+        (json!({"type": "Box", "size": "Small"}), (".size", "Invalid variant constructor", json!("Small"))),
     ]);
     errors::<Poly>(&[
-        (json!(["B", 1, "b"]), ("", "Invalid polymorphic variant constructor", json!("B"))),
+        (json!(["C", 1, "b"]), ("", "Invalid polymorphic variant constructor", json!("C"))),
         (json!(["A", 1]), ("", "Invalid number of arguments to polyvariant constructor", json!(["A", 1]))),
         (json!("A"), ("", "Not a polyvariant", json!("A"))),
         (json!([]), ("", "Expected polyvariant, found empty array", json!([]))),

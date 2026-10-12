@@ -65,8 +65,6 @@ struct FieldAttr {
 
 #[derive(Default)]
 struct VariantAttr {
-    /// The ReScript constructor, when it isn't the Rust one.
-    name: Option<String>,
     alias: Option<AliasValue>,
 }
 
@@ -191,9 +189,7 @@ impl VariantAttr {
 
         for attr in spice_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("name") {
-                    out.name = Some(string(&meta)?);
-                } else if meta.path.is_ident("alias") {
+                if meta.path.is_ident("alias") {
                     let lit: syn::Lit = meta.value()?.parse()?;
 
                     out.alias = Some(match lit {
@@ -1065,7 +1061,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         .variants
         .iter()
         .map(|variant| {
-            let VariantAttr { name, alias } = VariantAttr::parse(&variant.attrs)?;
+            let alias = VariantAttr::parse(&variant.attrs)?.alias;
             let fields = match &variant.fields {
                 Fields::Named(_) if container.poly => {
                     return Err(Error::new(
@@ -1079,7 +1075,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
 
             Ok(ParsedVariant {
                 variant,
-                name: name.unwrap_or_else(|| variant.ident.unraw().to_string()),
+                name: variant.ident.unraw().to_string(),
                 alias,
                 fields,
             })
