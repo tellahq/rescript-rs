@@ -105,11 +105,13 @@ enum Shape {
 Without `tag`, `Empty` is `"Empty"`, `Circle { radius }` is `{"Circle": {"radius": 1.5}}` and a constructor with
 several values is `{"Pair": [1, "a"]}`. Decoders read only that form; `legacy` (`@spice.serde({legacy: true})`)
 lets both decoders also read spice's default `["Constructor", …]` arrays and, with `tag`, a unit constructor's bare
-name, so values stored before a type switched keep decoding. The derive rejects what ppx-spice rejects (two
+name, so values stored before a type switched keep decoding. `legacy_write` (`@spice.serde({legacyWrite: true})`,
+ppx-spice 0.8) reads both forms too but writes spice's default arrays, led by the constructor's Rust name, so JSON
+that is already stored keeps its form until every reader understands serde. The derive rejects what ppx-spice rejects (two
 constructors with the same JSON name, several values or a field keyed like the tag in a tagged constructor).
 
 Container attributes: `codec`, `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `tag`,
-`legacy`, `poly` (a polymorphic variant, `[#A | #B]`), `decode_only`, `encode_only`, `rename_all = "camelCase"`.
+`legacy`, `legacy_write`, `poly` (a polymorphic variant, `[#A | #B]`), `decode_only`, `encode_only`, `rename_all = "camelCase"`.
 Field attributes: `name` (the ReScript field), `key` (`@spice.key`), `default` (`@spice.default`, a ReScript
 expression; simple literals and constructors are translated, otherwise add `rust_default`), `optional` (`field?:`),
 `codec` + `with` (`@spice.codec` and the Rust module with `decode`/`encode`/`samples`). Variant attribute: `rename`

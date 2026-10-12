@@ -69,6 +69,9 @@ struct ContainerAttr {
     /// `@spice.serde({legacy: true})`: an enum's decoders also read the
     /// default spice encoding, `["Constructor", …]`.
     legacy: bool,
+    /// `@spice.serde({legacyWrite: true})`: `legacy`, and the encoders write
+    /// the default spice encoding.
+    legacy_write: bool,
     /// `@tag(…)`: internally tagged.
     tag: Option<String>,
     krate: Option<Path>,
@@ -130,6 +133,9 @@ impl ContainerAttr {
                     out.only = Some("@spice.encode");
                 } else if meta.path.is_ident("legacy") {
                     out.legacy = true;
+                } else if meta.path.is_ident("legacy_write") {
+                    out.legacy = true;
+                    out.legacy_write = true;
                 } else if meta.path.is_ident("poly") {
                     out.poly = true;
                 } else if meta.path.is_ident("tag") {
@@ -871,9 +877,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let mut header = docs(&input.attrs, "");
 
-    let codec = match (&input.data, container.legacy) {
-        (Data::Enum(_), true) => "@spice.serde({legacy: true})",
-        (Data::Enum(_), false) => "@spice.serde",
+    let codec = match &input.data {
+        Data::Enum(_) if container.legacy_write => "@spice.serde({legacyWrite: true})",
+        Data::Enum(_) if container.legacy => "@spice.serde({legacy: true})",
+        Data::Enum(_) => "@spice.serde",
         _ => "@spice",
     };
 
@@ -1134,13 +1141,18 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         quote!(#spice::variant::Kind::Variant)
     };
     let mut decode_cases = vec![];
+    let mut array_encodes = vec![];
 
     for v in &variants {
         let constructor = &v.variant.ident;
         let tag = &v.name;
+        let json_tag = quote!(#spice::Value::String(::std::string::String::from(#tag)));
 
         match &v.variant.fields {
             Fields::Unit => {
+                array_encodes.push(quote! {
+                    Self::#constructor => #spice::Value::Array(vec![#json_tag]),
+                });
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
                         #spice::variant::arity_of(#kind, &items, 0, json)?;
@@ -1164,6 +1176,13 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                     quote!(#spice::args::finish(#var, #index)?)
                 });
 
+                array_encodes.push(quote! {
+                    Self::#constructor(#(#vars),*) => #spice::Value::Array(vec![
+                        #json_tag,
+                        #(#spice::Spice::encode::<H>(#vars)),*
+                    ]),
+                });
+
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
                         #spice::variant::arity_of(#kind, &items, #count, json)?;
@@ -1179,6 +1198,11 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                 let decode_fields = gen.decode_fields(fields, quote!(payload))?;
                 let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
                 let vars: Vec<Ident> = fields.iter().map(|f| field_var(&f.ident)).collect();
+                let object = gen.encode_fields(fields, |f| quote!(#f));
+
+                array_encodes.push(quote! {
+                    Self::#constructor { #(#idents),* } => #spice::Value::Array(vec![#json_tag, #object]),
+                });
                 decode_cases.push(quote! {
                     ::std::option::Option::Some(#tag) => {
                         #spice::variant::arity_of(#kind, &items, 1, json)?;
@@ -1207,6 +1231,15 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     };
 
     let (decode, encode) = derive_serde(gen, container, &variants, array_decode)?;
+    let encode = if container.legacy_write {
+        quote! {
+            match self {
+                #(#array_encodes)*
+            }
+        }
+    } else {
+        encode
+    };
 
     Ok((body, decode, encode))
 }
