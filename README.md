@@ -53,6 +53,73 @@ type user = { user_id: int, first_name: string, last_name: string }
 If there's a type you're dealing with which doesn't implement `TS`, you can use either
 `#[rescript(as = "..")]` or `#[rescript(type = "..")]`, enable the appropriate cargo feature, or open a PR.
 
+### Codecs (`spice` feature)
+`#[rescript(codec)]` defines a type once in Rust for both languages. Instead of the plain type export, the derive
+writes a ReScript declaration with [ppx-spice](https://github.com/jfrolich/ppx_spice) annotations (so ppx-spice
+generates the ReScript `t_decode` and `t_encode`), and a Rust codec (`rescript_rs::spice::Spice`) that reads and
+writes JSON the way that generated code does: same accepted inputs, same error paths and messages, same output.
+
+```rust
+#[derive(rescript_rs::ReScript, Clone)]
+#[rescript(codec, module = "DB__Row", name = "t")]
+struct Row {
+    #[rescript(key = "PK")]
+    pk: String,
+    #[rescript(name = "userID")]
+    user_id: String,
+    #[rescript(default = "[]")]
+    words: Vec<String>,
+    #[rescript(optional)]
+    title: Option<String>,
+}
+```
+
+`rescript_rs::spice::Module::new("DB__Row").with::<Row>().render()` gives `DB__Row.res`:
+
+```rescript
+@spice
+type t = {
+  @spice.key("PK")
+  pk: string,
+  userID: string,
+  @spice.default([])
+  words: array<string>,
+  title?: string,
+}
+```
+
+Enums are encoded the way Rust's serde derive does (`@spice.serde`, ppx-spice 0.7). `tag = "type"` adds
+`@tag("type")`, like `#[serde(tag = "type")]`:
+
+```rust
+#[derive(rescript_rs::ReScript, Clone)]
+#[rescript(codec, module = "Shape", name = "t", tag = "type")]
+enum Shape {
+    Empty,                      // {"type": "Empty"}
+    Circle { radius: f64 },     // {"type": "Circle", "radius": 1.5}
+    #[rescript(rename = "box")]
+    Rect(Size),                 // {"type": "box", "w": 1, "h": 2}, Size being a record
+}
+```
+
+Without `tag`, `Empty` is `"Empty"`, `Circle { radius }` is `{"Circle": {"radius": 1.5}}` and a constructor with
+several values is `{"Pair": [1, "a"]}`. Decoders read only that form; `legacy` (`@spice.serde({legacy: true})`)
+lets both decoders also read spice's default `["Constructor", …]` arrays and, with `tag`, a unit constructor's bare
+name, so values stored before a type switched keep decoding. `legacy_write` (`@spice.serde({legacyWrite: true})`,
+ppx-spice 0.8) reads both forms too but writes spice's default arrays, led by the constructor's Rust name, so JSON
+that is already stored keeps its form until every reader understands serde. The derive rejects what ppx-spice rejects (two
+constructors with the same JSON name, several values or a field keyed like the tag in a tagged constructor).
+
+Container attributes: `codec`, `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `tag`,
+`legacy`, `legacy_write`, `poly` (a polymorphic variant, `[#A | #B]`), `decode_only`, `encode_only`, `rename_all = "camelCase"`.
+Field attributes: `name` (the ReScript field), `key` (`@spice.key`), `default` (`@spice.default`, a ReScript
+expression; simple literals and constructors are translated, otherwise add `rust_default`), `optional` (`field?:`),
+`codec` + `with` (`@spice.codec` and the Rust module with `decode`/`encode`/`samples`). Variant attribute: `rename`
+(ReScript's `@as`, which names the constructor in memory and in JSON; `@spice.as`, the JSON name only, on a
+polymorphic variant, which ReScript can't rename). A `Host` says how values JSON cannot hold (`Infinity`, `bigint`, `Set`) stand in a
+`serde_json::Value`. `Spice::samples` and `Module::codecs` exist to test a type's Rust codec against the ReScript
+one.
+
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\
 The following environment variables may be set to configure *how* and *where*:

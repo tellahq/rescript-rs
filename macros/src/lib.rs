@@ -1,4 +1,3 @@
-#![macro_use]
 #![deny(unused)]
 
 use std::collections::{HashMap, HashSet};
@@ -18,6 +17,7 @@ mod utils;
 mod attr;
 mod deps;
 mod optional;
+mod spice;
 mod types;
 
 struct DerivedTS {
@@ -480,8 +480,11 @@ fn used_type_params<'ty, 'out>(
     }
 }
 
-/// Derives [TS](./trait.TS.html) for a struct or enum.
-/// Please take a look at [TS](./trait.TS.html) for documentation.
+/// Derives [TS](./trait.TS.html) for a struct or enum: its ReScript type.
+/// With `#[rescript(codec, …)]`, derives `rescript_rs::spice::Spice` (and
+/// `Declare`, given a module) instead: a Rust codec and a ReScript
+/// declaration that ppx-spice reads and writes the same way. See
+/// `rescript_rs::spice`.
 #[proc_macro_derive(ReScript, attributes(rescript))]
 pub fn rescript(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     match entry(input) {
@@ -492,6 +495,12 @@ pub fn rescript(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 fn entry(input: proc_macro::TokenStream) -> Result<TokenStream> {
+    let derive = syn::parse::<syn::DeriveInput>(input.clone())?;
+
+    if spice::wants_codec(&derive.attrs) {
+        return spice::derive(derive);
+    }
+
     let input = syn::parse::<Item>(input)?;
     let (ts, ident, generics) = match input {
         Item::Struct(s) => (types::struct_def(&s)?, s.ident, s.generics),

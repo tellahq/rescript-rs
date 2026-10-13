@@ -129,6 +129,8 @@ mod export;
 mod jiff;
 #[cfg(feature = "serde-json-impl")]
 mod serde_json;
+#[cfg(feature = "spice")]
+pub mod spice;
 #[cfg(feature = "tokio-impl")]
 mod tokio;
 
