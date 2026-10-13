@@ -15,6 +15,8 @@
 
 use std::borrow::Cow;
 
+use crate::export::format::format;
+
 pub use serde_json::{self, Map, Number, Value};
 
 /// `Spice.decodeError`.
@@ -334,7 +336,9 @@ impl<H: Host> Module<H> {
 
             match item {
                 Item::Declaration(text, _) => {
-                    out.push_str(&unqualify_all(text, self.name, root));
+                    let depth = self.name.matches('.').count() - root.matches('.').count();
+
+                    out.push_str(&format(&unqualify_all(text, self.name, root), depth));
                     out.push('\n');
                 }
                 Item::Module(module) => {

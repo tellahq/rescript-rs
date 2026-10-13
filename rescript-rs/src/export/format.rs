@@ -6,18 +6,22 @@
 //! The formatter keeps some layout choices from its input (a record whose
 //! first field is on a new line stays broken, attributes on their own line
 //! stay there). The layouts chosen here are fixed points of it: records and
-//! multi-constructor variants always break, and the first declaration's
-//! attributes sit on their own line.
+//! multi-constructor variants always break, the first declaration's
+//! attributes sit on their own line, and a field's attributes and a
+//! polymorphic variant keep the line breaks they were generated with.
 
 use super::doc::{
     breakable_group, concat, group, hard_line, if_breaks, indent, join, line, soft_line, text,
-    to_string, trailing_comma, Doc,
+    to_string, trailing_comma, Doc, WIDTH,
 };
 
 pub(crate) struct Decl {
+    /// `//` lines, printed above everything else.
+    comments: Vec<String>,
     docs: Vec<String>,
     attrs: Vec<String>,
     pub(crate) name: String,
+    rec: bool,
     params: Vec<String>,
     kind: Kind,
 }
@@ -30,14 +34,18 @@ enum Kind {
 }
 
 struct Field {
+    comments: Vec<String>,
     docs: Vec<String>,
     attrs: Vec<String>,
+    /// The attributes were on their own line.
+    attrs_break: bool,
     name: String,
     optional: bool,
     ty: Ty,
 }
 
 struct Constructor {
+    comments: Vec<String>,
     docs: Vec<String>,
     attrs: Vec<String>,
     name: String,
@@ -59,6 +67,20 @@ enum Ty {
     },
     /// An inline record definition; `{}` is an empty object type instead.
     Record(Vec<Field>),
+    /// A closed polymorphic variant, `[#A | #B(int)]`.
+    Poly {
+        tags: Vec<Tag>,
+        broken: bool,
+    },
+    Attributed(Vec<String>, Box<Ty>),
+}
+
+/// A polymorphic variant constructor.
+struct Tag {
+    comments: Vec<String>,
+    attrs: Vec<String>,
+    name: String,
+    args: Vec<Ty>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -66,111 +88,178 @@ enum Token {
     Ident(String),
     TypeVar(String),
     DocComment(String),
+    LineComment(String),
     Attribute(String),
     Punct(char),
 }
 
-fn lex(src: &str) -> Option<Vec<Token>> {
+/// The tokens, each with whether a line break precedes it.
+fn lex(src: &str) -> Option<Vec<(Token, bool)>> {
     let bytes = src.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
+    let mut newline = false;
 
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'\'';
-    let string_end = |start: usize| -> Option<usize> {
-        let mut j = start + 1;
-        while j < bytes.len() {
-            match bytes[j] {
-                b'\\' => j += 2,
-                b'"' => return Some(j + 1),
-                _ => j += 1,
-            }
-        }
-        None
-    };
 
     while i < bytes.len() {
         let b = bytes[i];
-        if b.is_ascii_whitespace() {
+        let token = if b.is_ascii_whitespace() {
+            newline |= b == b'\n';
             i += 1;
+            continue;
         } else if src[i..].starts_with("/**") {
             let end = i + 3 + src[i + 3..].find("*/")?;
-            tokens.push(Token::DocComment(src[i + 3..end].to_owned()));
+            let token = Token::DocComment(src[i + 3..end].to_owned());
             i = end + 2;
+            token
+        } else if src[i..].starts_with("//") {
+            let end = src[i..].find('\n').map_or(src.len(), |n| i + n);
+            let token = Token::LineComment(src[i + 2..end].trim_end().to_owned());
+            i = end;
+            token
         } else if b == b'@' {
             let mut j = i + 1;
             while j < bytes.len() && (is_ident(bytes[j]) || bytes[j] == b'.') {
                 j += 1;
             }
             if j < bytes.len() && bytes[j] == b'(' {
-                j = payload_end(bytes, j, &string_end)?;
+                j = payload_end(src, j)?;
             }
-            tokens.push(Token::Attribute(src[i..j].to_owned()));
+            let token = Token::Attribute(src[i..j].to_owned());
             i = j;
+            token
         } else if b == b'\\' && bytes.get(i + 1) == Some(&b'"') {
-            let end = string_end(i + 1)?;
-            tokens.push(Token::Ident(src[i..end].to_owned()));
+            let end = string_end(bytes, i + 1)?;
+            let token = Token::Ident(src[i..end].to_owned());
             i = end;
+            token
         } else if b == b'\'' {
             let mut j = i + 1;
             while j < bytes.len() && is_ident(bytes[j]) {
                 j += 1;
             }
-            tokens.push(Token::TypeVar(src[i..j].to_owned()));
+            let token = Token::TypeVar(src[i..j].to_owned());
             i = j;
+            token
         } else if b.is_ascii_alphabetic() || b == b'_' {
             let mut j = i;
             while j < bytes.len() && is_ident(bytes[j]) {
                 j += 1;
             }
-            tokens.push(Token::Ident(src[i..j].to_owned()));
+            let token = Token::Ident(src[i..j].to_owned());
             i = j;
-        } else if b"{}()<>,:?=|.".contains(&b) {
-            tokens.push(Token::Punct(b as char));
+            token
+        } else if b"{}()<>[],:?=|.#".contains(&b) {
             i += 1;
+            Token::Punct(b as char)
         } else {
             return None;
-        }
+        };
+
+        tokens.push((token, newline));
+        newline = false;
     }
 
     Some(tokens)
 }
 
-/// The end of an attribute payload: a single string or number literal.
-fn payload_end(
-    bytes: &[u8],
-    open: usize,
-    string_end: &dyn Fn(usize) -> Option<usize>,
-) -> Option<usize> {
+/// The index after the string literal whose opening quote is at `start`.
+fn string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut j = start + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b'"' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// The end of an attribute payload that `rescript format` prints unchanged:
+/// a string or number literal, a value path (`Story`, `Codecs.date`), `[]`,
+/// or a one-line record of such values (`{legacy: true}`).
+fn payload_end(src: &str, open: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
     let close = match bytes.get(open + 1)? {
-        b'"' => string_end(open + 1)?,
-        b'0'..=b'9' | b'-' => {
-            let mut j = open + 2;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
+        b'"' => string_end(bytes, open + 1)?,
+        b'[' if bytes.get(open + 2) == Some(&b']') => open + 3,
+        b'{' => open + 1 + src[open + 1..].find('}')? + 1,
+        _ => {
+            let mut j = open + 1;
+            while j < bytes.len() && !matches!(bytes[j], b')' | b'(' | b'\n') {
                 j += 1;
             }
             j
         }
-        _ => return None,
     };
-    (bytes.get(close) == Some(&b')')).then_some(close + 1)
+    let payload = &src[open + 1..close];
+
+    let valid = match payload.as_bytes().first()? {
+        b'"' => true,
+        b'[' => true,
+        b'{' => payload[1..payload.len() - 1].split(", ").all(
+            |entry| matches!(entry.split_once(": "), Some((k, v)) if is_path(k) && is_atom(v)),
+        ),
+        _ => is_atom(payload),
+    };
+
+    (valid && bytes.get(close) == Some(&b')')).then_some(close + 1)
+}
+
+fn is_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('.').all(|part| {
+            part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\'')
+        })
+}
+
+/// A number literal or a value path.
+fn is_atom(s: &str) -> bool {
+    let number = s.strip_prefix('-').unwrap_or(s);
+    let is_number = number.starts_with(|c: char| c.is_ascii_digit())
+        && number.parse::<f64>().is_ok()
+        && !number.ends_with('.');
+
+    is_number || is_path(s)
 }
 
 struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<(Token, bool)>,
     pos: usize,
+}
+
+/// The comments, doc comments and attributes in front of an item.
+struct Leading {
+    comments: Vec<String>,
+    docs: Vec<String>,
+    attrs: Vec<String>,
+    /// The item starts on a line after its last attribute.
+    attrs_break: bool,
 }
 
 impl Parser {
     fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos)
+        self.tokens.get(self.pos).map(|(token, _)| token)
     }
 
     fn peek_at(&self, offset: usize) -> Option<&Token> {
-        self.tokens.get(self.pos + offset)
+        self.tokens.get(self.pos + offset).map(|(token, _)| token)
+    }
+
+    /// Whether a line break precedes the next token.
+    fn at_new_line(&self) -> bool {
+        self.tokens
+            .get(self.pos)
+            .is_some_and(|(_, newline)| *newline)
     }
 
     fn next(&mut self) -> Option<Token> {
-        let token = self.tokens.get(self.pos).cloned();
+        let token = self.peek().cloned();
         self.pos += 1;
         token
     }
@@ -204,16 +293,32 @@ impl Parser {
         }
     }
 
-    fn docs_and_attrs(&mut self) -> (Vec<String>, Vec<String>) {
-        let (mut docs, mut attrs) = (Vec::new(), Vec::new());
+    fn leading(&mut self) -> Leading {
+        let mut leading = Leading {
+            comments: Vec::new(),
+            docs: Vec::new(),
+            attrs: Vec::new(),
+            attrs_break: false,
+        };
         loop {
             match self.peek() {
-                Some(Token::DocComment(d)) => docs.push(d.clone()),
-                Some(Token::Attribute(a)) => attrs.push(a.clone()),
-                _ => return (docs, attrs),
+                Some(Token::LineComment(c)) => leading.comments.push(c.clone()),
+                Some(Token::DocComment(d)) => leading.docs.push(d.clone()),
+                Some(Token::Attribute(a)) => leading.attrs.push(a.clone()),
+                _ => {
+                    leading.attrs_break = !leading.attrs.is_empty() && self.at_new_line();
+                    return leading;
+                }
             }
             self.pos += 1;
         }
+    }
+
+    fn starts_leading(&self) -> bool {
+        matches!(
+            self.peek(),
+            Some(Token::LineComment(_) | Token::DocComment(_) | Token::Attribute(_))
+        )
     }
 
     fn decls(&mut self) -> Option<Vec<Decl>> {
@@ -225,12 +330,19 @@ impl Parser {
     }
 
     fn decl(&mut self) -> Option<Decl> {
-        let (docs, attrs) = self.docs_and_attrs();
-        if self.eat_keyword("type") {
-            self.eat_keyword("rec");
-        } else if !self.eat_keyword("and") {
+        let Leading {
+            comments,
+            docs,
+            attrs,
+            ..
+        } = self.leading();
+        let rec = if self.eat_keyword("type") {
+            self.eat_keyword("rec")
+        } else if self.eat_keyword("and") {
+            false
+        } else {
             return None;
-        }
+        };
         let name = self.ident()?;
         let mut params = Vec::new();
         if self.eat('<') {
@@ -255,9 +367,11 @@ impl Parser {
             Kind::Alias(self.ty()?)
         };
         Some(Decl {
+            comments,
             docs,
             attrs,
             name,
+            rec,
             params,
             kind,
         })
@@ -265,27 +379,37 @@ impl Parser {
 
     fn starts_variant(&self) -> bool {
         match self.peek() {
-            Some(Token::Punct('|') | Token::DocComment(_) | Token::Attribute(_)) => true,
             Some(Token::Ident(s)) => {
                 s.starts_with(|c: char| c.is_ascii_uppercase())
                     && self.peek_at(1) != Some(&Token::Punct('.'))
             }
-            _ => false,
+            _ => self.peeks('|') || self.starts_leading(),
         }
+    }
+
+    fn peeks(&self, c: char) -> bool {
+        self.peek() == Some(&Token::Punct(c))
     }
 
     /// Fields up to and including the closing brace.
     fn fields(&mut self) -> Option<Vec<Field>> {
         let mut fields = Vec::new();
         while !self.eat('}') {
-            let (docs, attrs) = self.docs_and_attrs();
+            let Leading {
+                comments,
+                docs,
+                attrs,
+                attrs_break,
+            } = self.leading();
             let name = self.ident()?;
             let optional = self.eat('?');
             self.expect(':')?;
             let ty = self.ty()?;
             fields.push(Field {
+                comments,
                 docs,
                 attrs,
+                attrs_break,
                 name,
                 optional,
                 ty,
@@ -302,15 +426,16 @@ impl Parser {
         let mut constructors = Vec::new();
         loop {
             let start = self.pos;
-            let (mut docs, mut attrs) = self.docs_and_attrs();
+            let mut leading = self.leading();
             let bar = self.eat('|');
             if !bar && !constructors.is_empty() {
                 self.pos = start;
                 return Some(constructors);
             }
-            let (more_docs, more_attrs) = self.docs_and_attrs();
-            docs.extend(more_docs);
-            attrs.extend(more_attrs);
+            let more = self.leading();
+            leading.comments.extend(more.comments);
+            leading.docs.extend(more.docs);
+            leading.attrs.extend(more.attrs);
             let name = match self.peek() {
                 Some(Token::Ident(s)) if s.starts_with(|c: char| c.is_ascii_uppercase()) => {
                     self.ident()?
@@ -327,16 +452,51 @@ impl Parser {
                 Args::Tuple(self.ty_list(')')?)
             };
             constructors.push(Constructor {
-                docs,
-                attrs,
+                comments: leading.comments,
+                docs: leading.docs,
+                attrs: leading.attrs,
                 name,
                 args,
             });
-            if !matches!(
-                self.peek(),
-                Some(Token::Punct('|') | Token::DocComment(_) | Token::Attribute(_))
-            ) {
+            if !matches!(self.peek(), Some(Token::Punct('|'))) && !self.starts_leading() {
                 return Some(constructors);
+            }
+        }
+    }
+
+    /// The tags of a polymorphic variant, after its `[`, up to and including
+    /// the `]`.
+    fn tags(&mut self) -> Option<Vec<Tag>> {
+        let mut tags = Vec::new();
+        loop {
+            let mut leading = self.leading();
+            if !self.eat('|') && !tags.is_empty() {
+                return None;
+            }
+            let more = self.leading();
+            if !leading.docs.is_empty() || !more.docs.is_empty() {
+                return None;
+            }
+            leading.comments.extend(more.comments);
+            leading.attrs.extend(more.attrs);
+            self.expect('#')?;
+            let name = self.ident()?;
+            if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                return None;
+            }
+            let args = if self.eat('(') {
+                self.ty_list(')')?
+            } else {
+                Vec::new()
+            };
+            tags.push(Tag {
+                comments: leading.comments,
+                attrs: leading.attrs,
+                name,
+                args,
+            });
+            if self.eat(']') {
+                return Some(tags);
             }
         }
     }
@@ -355,11 +515,27 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Option<Ty> {
+        let start = self.pos;
         match self.next()? {
             Token::TypeVar(v) => Some(Ty::Var(v)),
+            Token::Attribute(attr) => {
+                let mut attrs = vec![attr];
+                while let Some(Token::Attribute(a)) = self.peek() {
+                    attrs.push(a.clone());
+                    self.pos += 1;
+                }
+                Some(Ty::Attributed(attrs, Box::new(self.ty()?)))
+            }
             Token::Punct('{') => {
                 let fields = self.fields()?;
                 (!fields.is_empty()).then_some(Ty::Record(fields))
+            }
+            Token::Punct('[') => {
+                let tags = self.tags()?;
+                let broken = self.tokens[start + 1..self.pos]
+                    .iter()
+                    .any(|(_, newline)| *newline);
+                Some(Ty::Poly { tags, broken })
             }
             Token::Punct('(') => {
                 let mut types = self.ty_list(')')?;
@@ -397,6 +573,16 @@ pub(crate) fn parse(src: &str) -> Option<Vec<Decl>> {
     parser.decls()
 }
 
+/// Leading `//` comments, each on its own line, as the formatter prints the
+/// comments it attaches to the next node.
+fn print_comments(comments: &[String]) -> Doc {
+    let lines = comments
+        .iter()
+        .map(|c| concat(vec![text(format!("//{c}")), hard_line()]))
+        .collect();
+    concat(lines)
+}
+
 fn print_docs(docs: &[String]) -> Doc {
     if docs.is_empty() {
         return Doc::Nil;
@@ -417,10 +603,14 @@ fn print_attributes(docs: &[String], attrs: &[String], line_break: Doc) -> Doc {
     concat(vec![print_docs(docs), attrs])
 }
 
-/// `@name(payload)` prints its non-huggable payload between soft lines.
+/// `@name(payload)`: a record, array or string payload hugs the parentheses,
+/// others sit between soft lines.
 fn print_attribute(attr: &str) -> Doc {
     match attr.split_once('(') {
         None => text(attr),
+        Some((name, payload)) if payload.starts_with(['{', '[', '"']) => {
+            text(format!("{name}({payload}"))
+        }
         Some((name, payload)) => group(concat(vec![
             text(name),
             text("("),
@@ -439,6 +629,11 @@ fn print_ty(ty: &Ty) -> Doc {
         Ty::Var(v) => text(v),
         Ty::Tuple(types) => group(print_tuple(types)),
         Ty::Record(fields) => group(print_fields(fields)),
+        Ty::Poly { tags, broken } => print_poly(tags, *broken),
+        Ty::Attributed(attrs, ty) => group(concat(vec![
+            print_attributes(&[], attrs, line()),
+            print_ty(ty),
+        ])),
         Ty::Constr { path, args } => match args.as_slice() {
             [] => text(path),
             [Ty::Tuple(types)] => group(concat(vec![
@@ -462,6 +657,45 @@ fn print_ty(ty: &Ty) -> Doc {
     }
 }
 
+/// `Ptyp_variant`: a tag's leading comments follow its bar.
+fn print_poly(tags: &[Tag], broken: bool) -> Doc {
+    let rows = tags
+        .iter()
+        .enumerate()
+        .map(|(i, tag)| {
+            let bar = if i > 0 {
+                text("| ")
+            } else {
+                if_breaks(text("| "), Doc::Nil)
+            };
+            let args = match tag.args.as_slice() {
+                [] => Doc::Nil,
+                [ty] => concat(vec![text("("), print_ty(ty), text(")")]),
+                types => group(print_tuple(types)),
+            };
+            concat(vec![
+                bar,
+                print_comments(&tag.comments),
+                group(concat(vec![
+                    print_attributes(&[], &tag.attrs, line()),
+                    text(format!("#{}", tag.name)),
+                    args,
+                ])),
+            ])
+        })
+        .collect();
+
+    breakable_group(
+        broken,
+        concat(vec![
+            text("["),
+            indent(concat(vec![soft_line(), join(line, rows)])),
+            soft_line(),
+            text("]"),
+        ]),
+    )
+}
+
 fn comma_list(docs: Vec<Doc>) -> Doc {
     join(|| concat(vec![text(","), line()]), docs)
 }
@@ -479,18 +713,25 @@ fn print_tuple(types: &[Ty]) -> Doc {
     ])
 }
 
+/// A field's attributes stay on their own line when they were generated
+/// there.
 fn print_field(field: &Field) -> Doc {
-    let line_break = if field.docs.is_empty() {
+    let line_break = if field.attrs_break {
+        hard_line()
+    } else if field.docs.is_empty() {
         line()
     } else {
         text(" ")
     };
-    group(concat(vec![
-        print_attributes(&field.docs, &field.attrs, line_break),
-        text(&field.name),
-        text(if field.optional { "?: " } else { ": " }),
-        print_ty(&field.ty),
-    ]))
+    concat(vec![
+        print_comments(&field.comments),
+        group(concat(vec![
+            print_attributes(&field.docs, &field.attrs, line_break),
+            text(&field.name),
+            text(if field.optional { "?: " } else { ": " }),
+            print_ty(&field.ty),
+        ])),
+    ])
 }
 
 fn print_fields(fields: &[Field]) -> Doc {
@@ -522,6 +763,7 @@ fn print_constructor(i: usize, constructor: &Constructor) -> Doc {
         ]))),
     };
     concat(vec![
+        print_comments(&constructor.comments),
         print_docs(&constructor.docs),
         bar,
         group(concat(vec![
@@ -583,7 +825,7 @@ fn print_decl(i: usize, count: usize, decl: &Decl) -> Doc {
         )
     };
     let prefix = match (i, count) {
-        (0, 1) => "type ",
+        (0, 1) if !decl.rec => "type ",
         (0, _) => "type rec ",
         _ => "and ",
     };
@@ -602,6 +844,7 @@ fn print_decl(i: usize, count: usize, decl: &Decl) -> Doc {
         ]))
     };
     concat(vec![
+        print_comments(&decl.comments),
         docs,
         group(concat(vec![
             attrs,
@@ -615,12 +858,30 @@ fn print_decl(i: usize, count: usize, decl: &Decl) -> Doc {
 
 /// The declarations as one formatted (`type rec … and …` when several) chain.
 pub(crate) fn print(decls: &[&Decl]) -> String {
+    print_in(decls, WIDTH)
+}
+
+/// [`print`] in `width` columns, for declarations nested in a module.
+fn print_in(decls: &[&Decl], width: usize) -> String {
     let docs = decls
         .iter()
         .enumerate()
         .map(|(i, d)| print_decl(i, decls.len(), d))
         .collect();
-    to_string(join(|| concat(vec![hard_line(), hard_line()]), docs))
+    to_string(join(|| concat(vec![hard_line(), hard_line()]), docs), width)
+}
+
+#[cfg(feature = "spice")]
+/// `source` laid out as `rescript format` would at `depth` levels of module
+/// nesting, or unchanged when it uses syntax outside the subset rescript-rs
+/// emits.
+pub(crate) fn format(source: &str, depth: usize) -> String {
+    match parse(source) {
+        Some(decls) if !decls.is_empty() => {
+            print_in(&decls.iter().collect::<Vec<_>>(), WIDTH - 2 * depth)
+        }
+        _ => source.to_owned(),
+    }
 }
 
 // Expected outputs are fixed points of `rescript format` 12.3: formatting
@@ -747,5 +1008,21 @@ and empty = {}
     fn leaves_syntax_outside_the_generated_subset_unparsed() {
         assert!(parse("type t = { a: int } & other").is_none());
         assert!(parse("type t = { inner: {  } }").is_none());
+    }
+
+    #[cfg(feature = "spice")]
+    #[test]
+    fn lays_out_codec_declarations_as_rescript_format_does() {
+        let row = "// A row.\n@spice\ntype t = {\n  // The key.\n  @spice.key(\"PK\")\n  pk: string,\n  @spice.default([])\n  words: array<string>,\n  @spice.key(\"a_long_json_key\") @spice.default(-1.5)\n  scale: float,\n  values: array<(int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, string)>,\n  date: @spice.codec(Codecs.date) string,\n}";
+        let poly = "// Poly.\n@spice.serde({legacy: true})\ntype rec t = [\n  // First.\n  | #A\n  | @spice.as(\"b\") #B(int, string)\n  | #C(array<t>)\n]";
+
+        assert_eq!(
+            super::format(row, 1),
+            "// A row.\n@spice\ntype t = {\n  // The key.\n  @spice.key(\"PK\")\n  pk: string,\n  @spice.default([])\n  words: array<string>,\n  @spice.key(\"a_long_json_key\") @spice.default(-1.5)\n  scale: float,\n  values: array<(\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    int,\n    string,\n  )>,\n  date: @spice.codec(Codecs.date) string,\n}"
+        );
+        assert_eq!(
+            super::format(poly, 0),
+            "// Poly.\n@spice.serde({legacy: true})\ntype rec t = [\n  | // First.\n  #A\n  | @spice.as(\"b\") #B(int, string)\n  | #C(array<t>)\n]"
+        );
     }
 }

@@ -11,7 +11,7 @@ use crate::{Config, TS};
 
 mod doc;
 mod error;
-mod format;
+pub(crate) mod format;
 mod path;
 
 static EXPORT_PATHS: OnceLock<Mutex<HashMap<PathBuf, Vec<Entry>>>> = OnceLock::new();

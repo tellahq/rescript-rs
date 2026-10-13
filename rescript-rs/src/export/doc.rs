@@ -4,7 +4,8 @@
 //! rest of the stack, byte widths, trailing-space trimming) is what makes the
 //! generated files byte-identical to `rescript format` output.
 
-const WIDTH: i64 = 100;
+/// The formatter's line width.
+pub(super) const WIDTH: usize = 100;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Line {
@@ -197,7 +198,8 @@ fn flush_newline(out: &mut String) {
     out.push('\n');
 }
 
-pub(super) fn to_string(mut doc: Doc) -> String {
+/// Lays `doc` out in `width` columns.
+pub(super) fn to_string(mut doc: Doc, width: usize) -> String {
     propagate_forced_breaks(&mut doc);
 
     let mut out = String::new();
@@ -235,7 +237,8 @@ pub(super) fn to_string(mut doc: Doc) -> String {
                 (Mode::Flat, Line::Soft) => {}
             },
             Doc::Group { should_break, doc } => {
-                let flat = !should_break && fits(WIDTH - pos, (ind, Mode::Flat, doc), &stack);
+                let flat =
+                    !should_break && fits(width as i64 - pos, (ind, Mode::Flat, doc), &stack);
                 stack.push((ind, if flat { Mode::Flat } else { Mode::Break }, doc));
             }
         }
