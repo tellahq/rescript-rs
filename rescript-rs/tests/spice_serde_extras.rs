@@ -127,6 +127,32 @@ fn other_is_a_unit_variant() {
     );
 }
 
+/// With runtime_names, a polymorphic variant's tag is its JSON name.
+#[derive(ReScript, Debug, Clone, Copy, PartialEq)]
+#[rescript(codec, poly, runtime_names, module = "Extras", name = "frame")]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Frame {
+    None,
+    #[serde(rename = "BLOB-OUTLINE")]
+    BlobOutline,
+    Round,
+}
+
+#[test]
+fn poly_runtime_names() {
+    assert_eq!(
+        Module::new("Extras").with::<Frame>().render(),
+        "// With runtime_names, a polymorphic variant's tag is its JSON name.\n@spice.serde\ntype frame = [\n  | #NONE\n  | #\"BLOB-OUTLINE\"\n  | #ROUND\n]\n"
+    );
+    assert_eq!(
+        Frame::BlobOutline.rescript_value().unwrap(),
+        "#\"BLOB-OUTLINE\""
+    );
+    assert_eq!(Frame::Round.rescript_value().unwrap(), "#ROUND");
+    assert_eq!(decode(json!("BLOB-OUTLINE")), Some(Frame::BlobOutline));
+    assert_eq!(Frame::None.encode::<Plain>(), json!("NONE"));
+}
+
 #[test]
 fn declarations() {
     let rendered = Module::new("Extras")

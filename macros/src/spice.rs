@@ -639,6 +639,18 @@ fn field_var(ident: &Ident) -> Ident {
     format_ident!("spice_field_{}", ident.unraw())
 }
 
+/// A polymorphic variant constructor, `#Name`, or `#"name"` when the name
+/// isn't an identifier.
+fn poly_tag(name: &str) -> String {
+    let identifier = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+
+    match identifier {
+        true => format!("#{name}"),
+        false => format!("#{name:?}"),
+    }
+}
+
 /// The JSON name of a `@spice.serde` constructor.
 fn serde_name(v: &ParsedVariant) -> String {
     v.alias.clone().unwrap_or_else(|| v.name.clone())
@@ -1221,12 +1233,6 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 "tag, legacy, poly and runtime_names are for enums",
             ))
         }
-        Data::Enum(_) if container.poly && container.runtime_names => {
-            return Err(Error::new(
-                input.span(),
-                "a polymorphic variant has no runtime names (ReScript has no @as on them)",
-            ))
-        }
         Data::Struct(data) => derive_struct(&gen, &container, data, ident)?,
         Data::Enum(data) => derive_enum(&gen, &container, data)?,
         Data::Union(_) => return Err(Error::new(input.span(), "unions are not supported")),
@@ -1387,7 +1393,22 @@ fn rescript_value(gen: &Gen, container: &ContainerAttr, data: &Data) -> Result<T
                 let constructor = &variant.ident;
                 let name = constructor.unraw().to_string();
                 let head = if container.poly {
-                    quote!(format!("#{}", #name))
+                    let tag = match container.runtime_names {
+                        true => {
+                            let attr = VariantAttr::parse(&variant.attrs)?;
+                            let json = attr
+                                .alias
+                                .or_else(|| {
+                                    container.rename_variants.map(|rule| rule.variant(&name))
+                                })
+                                .unwrap_or(name);
+
+                            poly_tag(&json)
+                        }
+                        false => poly_tag(&name),
+                    };
+
+                    quote!(::std::string::String::from(#tag))
                 } else {
                     quote!(format!(
                         "{}{}",
@@ -1562,12 +1583,18 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         .map(|variant| {
             let name = variant.ident.unraw().to_string();
             let attr = VariantAttr::parse(&variant.attrs)?;
-            let alias = attr.alias.or_else(|| {
+            let alias = attr.alias.clone().or_else(|| {
                 container
                     .rename_variants
                     .map(|rule| rule.variant(&name))
                     .filter(|renamed| *renamed != name)
             });
+            // A polymorphic variant's runtime value is its tag: with
+            // runtime_names, the tag is the JSON name.
+            let (name, alias) = match (container.poly && container.runtime_names, alias) {
+                (true, Some(json)) => (json, None),
+                (_, alias) => (name, alias),
+            };
             let fields = match &variant.fields {
                 Fields::Named(_) if container.poly => {
                     return Err(Error::new(
@@ -1596,7 +1623,10 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     let mut lines = vec![];
 
     for v in &variants {
-        let constructor = format!("{}{}", if container.poly { "#" } else { "" }, v.name);
+        let constructor = match container.poly {
+            true => poly_tag(&v.name),
+            false => v.name.clone(),
+        };
         let docs = docs(&v.variant.attrs, "  ");
         let alias = v
             .alias
