@@ -80,6 +80,9 @@ struct ContainerAttr {
     krate: Option<Path>,
     /// A polymorphic variant, `[#A | #B]`.
     poly: bool,
+    /// `#[rescript(fallback = "path")]`: what anything the decoder rejects
+    /// decodes to, `@spice.fallback(…)`.
+    fallback: Option<Path>,
 }
 
 #[derive(Default)]
@@ -101,6 +104,13 @@ struct FieldAttr {
 #[derive(Default)]
 struct VariantAttr {
     alias: Option<String>,
+    /// `#[serde(alias = "…")]`: other names it decodes from, `@spice.alias`.
+    aliases: Vec<String>,
+    /// `#[serde(other)]`: what an unknown name decodes to, `@spice.other`.
+    other: bool,
+    /// `#[serde(untagged)]`: written as its one value alone,
+    /// `@spice.untagged`.
+    untagged: bool,
 }
 
 /// serde's `rename_all` rules.
@@ -289,6 +299,8 @@ impl ContainerAttr {
                     out.rename_fields = Some(RenameRule::Camel);
                 } else if meta.path.is_ident("crate") {
                     out.krate = Some(meta.value()?.parse::<LitStr>()?.parse()?);
+                } else if meta.path.is_ident("fallback") {
+                    out.fallback = Some(meta.value()?.parse::<LitStr>()?.parse()?);
                 } else {
                     return Err(meta.error("unknown rescript attribute with codec"));
                 }
@@ -360,11 +372,12 @@ impl VariantAttr {
         for meta in serde_metas(attrs)? {
             if meta.path().is_ident("rename") {
                 out.alias = Some(meta_string(&meta)?);
+            } else if meta.path().is_ident("alias") {
+                out.aliases.push(meta_string(&meta)?);
             } else if meta.path().is_ident("other") {
-                return Err(Error::new(
-                    meta.span(),
-                    "spice has no catch-all constructor (serde's other) yet",
-                ));
+                out.other = true;
+            } else if meta.path().is_ident("untagged") {
+                out.untagged = true;
             }
         }
 
@@ -627,17 +640,51 @@ fn serde_name(v: &ParsedVariant) -> String {
 
 fn validate_serde(container: &ContainerAttr, variants: &[ParsedVariant]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
+    let others: Vec<_> = variants.iter().filter(|v| v.other).collect();
+
+    if let [_, second, ..] = others.as_slice() {
+        return Err(Error::new(
+            second.variant.span(),
+            "Only one variant can be #[serde(other)]",
+        ));
+    }
 
     for v in variants {
         let span = v.variant.span();
 
-        let name = serde_name(v);
+        if v.other && !matches!(v.variant.fields, Fields::Unit) {
+            return Err(Error::new(span, "#[serde(other)] needs a unit variant"));
+        }
 
-        if !seen.insert(name.clone()) {
-            return Err(Error::new(
-                span,
-                format!("Two constructors are both named {name} in JSON"),
-            ));
+        if v.untagged {
+            if !matches!(&v.variant.fields, Fields::Unnamed(f) if f.unnamed.len() == 1) {
+                return Err(Error::new(
+                    span,
+                    "#[serde(untagged)] needs a variant with one value",
+                ));
+            }
+
+            if !v.aliases.is_empty() {
+                return Err(Error::new(span, "An untagged variant has no name to alias"));
+            }
+
+            if !others.is_empty() {
+                return Err(Error::new(
+                    span,
+                    "#[serde(other)] and #[serde(untagged)] can't be combined",
+                ));
+            }
+
+            continue;
+        }
+
+        for name in std::iter::once(serde_name(v)).chain(v.aliases.iter().cloned()) {
+            if !seen.insert(name.clone()) {
+                return Err(Error::new(
+                    span,
+                    format!("Two constructors are both named {name} in JSON"),
+                ));
+            }
         }
 
         let Some(tag) = &container.tag else {
@@ -679,15 +726,37 @@ fn derive_serde(
     let mut names = vec![];
     let mut objects = vec![];
     let mut encodes = vec![];
+    let mut untagged = vec![];
 
-    for v in variants {
+    for v in variants.iter().filter(|v| v.untagged) {
+        let constructor = &v.variant.ident;
+        let Fields::Unnamed(unnamed) = &v.variant.fields else {
+            unreachable!("validated");
+        };
+        let ty = &unnamed.unnamed[0].ty;
+
+        untagged.push(quote! {
+            if let Ok(v0) = <#ty as #spice::Spice>::decode::<H>(json) {
+                return Ok(Self::#constructor(v0));
+            }
+        });
+        encodes.push(quote!(Self::#constructor(v0) => #spice::Spice::encode::<H>(v0),));
+    }
+
+    for v in variants.iter().filter(|v| !v.untagged) {
         let constructor = &v.variant.ident;
         let name = serde_name(v);
-        let json_name = quote!(#spice::Value::String(::std::string::String::from(#name)));
+        let name = std::iter::once(name.clone())
+            .chain(v.aliases.iter().cloned())
+            .map(|n| quote!(#n))
+            .reduce(|a, b| quote!(#a | #b))
+            .expect("a name");
+        let name_str = serde_name(v);
+        let json_name = quote!(#spice::Value::String(::std::string::String::from(#name_str)));
         let tag_entry = tag.map(|tag| {
             quote!((::std::string::String::from(#tag), ::std::option::Option::Some(#json_name)))
         });
-        let wrap = |value: TokenStream| quote!(#spice::object([(::std::string::String::from(#name), ::std::option::Option::Some(#value))]));
+        let wrap = |value: TokenStream| quote!(#spice::object([(::std::string::String::from(#name_str), ::std::option::Option::Some(#value))]));
 
         match &v.variant.fields {
             Fields::Unit => {
@@ -697,7 +766,7 @@ fn derive_serde(
                     None => quote! {
                         #name => #spice::serde::at(
                             #spice::serde::unit::<H>(payload).map(|()| Self::#constructor),
-                            #name,
+                            name,
                         ),
                     },
                 });
@@ -720,14 +789,14 @@ fn derive_serde(
                             }
                         });
                         encodes.push(quote! {
-                            Self::#constructor(v0) => #spice::serde::tagged_object(#tag, #name, #encoded),
+                            Self::#constructor(v0) => #spice::serde::tagged_object(#tag, #name_str, #encoded),
                         });
                     }
                     None => {
                         objects.push(quote! {
                             #name => #spice::serde::at(
                                 <#ty as #spice::Spice>::decode::<H>(payload).map(Self::#constructor),
-                                #name,
+                                name,
                             ),
                         });
                         let value = wrap(encoded);
@@ -760,7 +829,7 @@ fn derive_serde(
 
                             Ok(Self::#constructor(#(#finishes),*))
                         })(),
-                        #name,
+                        name,
                     ),
                 });
                 encodes.push(quote!(Self::#constructor(#(#vars),*) => #value,));
@@ -800,7 +869,7 @@ fn derive_serde(
 
                                     #built
                                 })(),
-                                #name,
+                                name,
                             ),
                         });
                         encodes.push(quote!(Self::#constructor { #(#idents),* } => #value,));
@@ -810,11 +879,20 @@ fn derive_serde(
         }
     }
 
+    // An unknown name decodes to the `#[serde(other)]` variant, if any.
+    let unknown = match variants.iter().find(|v| v.other) {
+        Some(v) => {
+            let constructor = &v.variant.ident;
+
+            quote!(Ok(Self::#constructor))
+        }
+        None => quote!(Err(#spice::serde::unknown(json))),
+    };
     let object = match tag {
         Some(tag) => quote! {
             match #spice::serde::tag::<H>(&map, #tag, json)? {
                 #(#objects)*
-                _ => Err(#spice::serde::unknown(json)),
+                _ => #unknown,
             }
         },
         None => quote! {
@@ -822,7 +900,7 @@ fn derive_serde(
 
             match name {
                 #(#objects)*
-                _ => Err(#spice::serde::unknown(json)),
+                _ => #unknown,
             }
         },
     };
@@ -831,7 +909,7 @@ fn derive_serde(
         quote! {
             match name {
                 #(#names)*
-                _ => Err(#spice::serde::unknown(json)),
+                _ => #unknown,
             }
         }
     } else {
@@ -847,6 +925,23 @@ fn derive_serde(
             #spice::serde::Shape::Name(name) => #names,
             #spice::serde::Shape::Object(map) => { #object }
             #spice::serde::Shape::Array(items) => #array_decode,
+        }
+    };
+    // What no name reads decodes as the first untagged variant it is,
+    // keeping the named decoder's error otherwise.
+    let decode = if untagged.is_empty() {
+        decode
+    } else {
+        quote! {
+            let named = (|| -> #spice::Result<Self> { #decode })();
+
+            if named.is_ok() {
+                return named;
+            }
+
+            #(#untagged)*
+
+            named
         }
     };
     let encode = quote! {
@@ -1124,8 +1219,28 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         ""
     };
 
-    header.push_str(&format!("\ntype {rec}{name} ="));
+    let type_line = format!("\ntype {rec}{name} =");
 
+    // `@spice.fallback(…)` with the fallback value as a ReScript literal.
+    let fallback_attr = match &container.fallback {
+        Some(path) => {
+            let message = format!("{} has no ReScript value", quote!(#path));
+
+            quote!(format!(
+                " @spice.fallback({})",
+                #spice::Spice::rescript_value(&#path()).expect(#message),
+            ))
+        }
+        None => quote!(::std::string::String::new()),
+    };
+    let decode = match &container.fallback {
+        Some(path) => quote! {
+            let decoded = (|| -> #spice::Result<Self> { #decode })();
+
+            decoded.or_else(|_| Ok(#path()))
+        },
+        None => decode,
+    };
     let declare = container.module.as_ref().map(|module| {
         quote! {
             #[automatically_derived]
@@ -1135,7 +1250,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 }
 
                 fn declaration() -> ::std::string::String {
-                    format!("{}{}", #header, #body)
+                    format!("{}{}{}{}", #header, #fallback_attr, #type_line, #body)
                 }
             }
         }
@@ -1390,6 +1505,9 @@ struct ParsedVariant<'a> {
     /// The ReScript constructor, which is also its name in JSON.
     name: String,
     alias: Option<String>,
+    aliases: Vec<String>,
+    other: bool,
+    untagged: bool,
     fields: Option<Vec<ParsedField>>,
 }
 
@@ -1400,7 +1518,8 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         .iter()
         .map(|variant| {
             let name = variant.ident.unraw().to_string();
-            let alias = VariantAttr::parse(&variant.attrs)?.alias.or_else(|| {
+            let attr = VariantAttr::parse(&variant.attrs)?;
+            let alias = attr.alias.or_else(|| {
                 container
                     .rename_variants
                     .map(|rule| rule.variant(&name))
@@ -1421,6 +1540,9 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                 variant,
                 name,
                 alias,
+                aliases: attr.aliases,
+                other: attr.other,
+                untagged: attr.untagged,
                 fields,
             })
         })
@@ -1442,6 +1564,15 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                 false => format!("@as({a:?}) "),
             })
             .unwrap_or_default();
+        let alias = format!(
+            "{alias}{}{}{}",
+            v.aliases
+                .iter()
+                .map(|a| format!("@spice.alias({a:?}) "))
+                .collect::<String>(),
+            if v.other { "@spice.other " } else { "" },
+            if v.untagged { "@spice.untagged " } else { "" },
+        );
 
         lines.push(match &v.variant.fields {
             Fields::Unit => quote!(format!("{}  | {}{}\n", #docs, #alias, #constructor)),
@@ -1477,9 +1608,21 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     let mut decode_cases = vec![];
     let mut array_encodes = vec![];
 
+    let constructors: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+
     for v in &variants {
         let constructor = &v.variant.ident;
         let tag = &v.name;
+        // The legacy array reads the constructor and its other aliases.
+        let tags = std::iter::once(tag)
+            .chain(
+                v.aliases
+                    .iter()
+                    .filter(|a| !constructors.contains(&a.as_str())),
+            )
+            .map(|t| quote!(::std::option::Option::Some(#t)))
+            .reduce(|a, b| quote!(#a | #b))
+            .expect("a tag");
         let json_tag = quote!(#spice::Value::String(::std::string::String::from(#tag)));
 
         match &v.variant.fields {
@@ -1488,7 +1631,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                     Self::#constructor => #spice::Value::Array(vec![#json_tag]),
                 });
                 decode_cases.push(quote! {
-                    ::std::option::Option::Some(#tag) => {
+                    #tags => {
                         #spice::variant::arity_of(#kind, &items, 0, json)?;
 
                         Ok(Self::#constructor)
@@ -1518,7 +1661,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                 });
 
                 decode_cases.push(quote! {
-                    ::std::option::Option::Some(#tag) => {
+                    #tags => {
                         #spice::variant::arity_of(#kind, &items, #count, json)?;
 
                         let (#(#vars,)*) = (#(#decodes,)*);
@@ -1538,7 +1681,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                     Self::#constructor { #(#idents),* } => #spice::Value::Array(vec![#json_tag, #object]),
                 });
                 decode_cases.push(quote! {
-                    ::std::option::Option::Some(#tag) => {
+                    #tags => {
                         #spice::variant::arity_of(#kind, &items, 1, json)?;
 
                         let payload = &items[1];
@@ -1557,10 +1700,18 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         }
     }
 
+    let unknown = match variants.iter().find(|v| v.other) {
+        Some(v) => {
+            let constructor = &v.variant.ident;
+
+            quote!(Ok(Self::#constructor))
+        }
+        None => quote!(Err(#spice::variant::unknown_of(#kind, &items))),
+    };
     let array_decode = quote! {
         match #spice::variant::tag::<H>(&items) {
             #(#decode_cases)*
-            _ => Err(#spice::variant::unknown_of(#kind, &items)),
+            _ => #unknown,
         }
     };
 
