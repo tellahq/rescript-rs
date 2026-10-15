@@ -62,7 +62,10 @@ struct ContainerAttr {
     module: Option<String>,
     name: Option<String>,
     attrs: Option<String>,
-    camel_case: bool,
+    /// How field names become JSON keys (and ReScript field names).
+    rename_fields: Option<RenameRule>,
+    /// How variant names become their JSON names.
+    rename_variants: Option<RenameRule>,
     /// `@spice.decode` or `@spice.encode` instead of `@spice`: ReScript gets
     /// only that function (Rust gets both).
     only: Option<&'static str>,
@@ -82,6 +85,10 @@ struct ContainerAttr {
 #[derive(Default)]
 struct FieldAttr {
     name: Option<String>,
+    /// `#[serde(rename = "…")]`: the JSON key.
+    serde_rename: Option<String>,
+    /// `#[serde(default)]` (`None`) or `#[serde(default = "path")]`.
+    serde_default: Option<Option<Path>>,
     key: Option<String>,
     default: Option<String>,
     rust_default: Option<Expr>,
@@ -94,6 +101,115 @@ struct FieldAttr {
 #[derive(Default)]
 struct VariantAttr {
     alias: Option<String>,
+}
+
+/// serde's `rename_all` rules.
+#[derive(Clone, Copy)]
+enum RenameRule {
+    Lower,
+    Upper,
+    Pascal,
+    Camel,
+    Snake,
+    ScreamingSnake,
+    Kebab,
+    ScreamingKebab,
+}
+
+impl RenameRule {
+    fn parse(value: &str, span: Span) -> Result<Self> {
+        Ok(match value {
+            "lowercase" => Self::Lower,
+            "UPPERCASE" => Self::Upper,
+            "PascalCase" => Self::Pascal,
+            "camelCase" => Self::Camel,
+            "snake_case" => Self::Snake,
+            "SCREAMING_SNAKE_CASE" => Self::ScreamingSnake,
+            "kebab-case" => Self::Kebab,
+            "SCREAMING-KEBAB-CASE" => Self::ScreamingKebab,
+            _ => return Err(Error::new(span, format!("unknown rename rule {value:?}"))),
+        })
+    }
+
+    /// A `snake_case` field name, as serde renames it.
+    fn field(self, name: &str) -> String {
+        match self {
+            Self::Lower | Self::Snake => name.to_owned(),
+            Self::Upper | Self::ScreamingSnake => name.to_ascii_uppercase(),
+            Self::Pascal => {
+                let camel = camel(name);
+                let mut chars = camel.chars();
+
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
+            Self::Camel => camel(name),
+            Self::Kebab => name.replace('_', "-"),
+            Self::ScreamingKebab => name.to_ascii_uppercase().replace('_', "-"),
+        }
+    }
+
+    /// A `PascalCase` variant name, as serde renames it.
+    fn variant(self, name: &str) -> String {
+        let snake = || {
+            let mut out = String::new();
+
+            for (i, c) in name.char_indices() {
+                if i > 0 && c.is_uppercase() {
+                    out.push('_');
+                }
+
+                out.extend(c.to_lowercase());
+            }
+
+            out
+        };
+
+        match self {
+            Self::Pascal => name.to_owned(),
+            Self::Lower => name.to_ascii_lowercase(),
+            Self::Upper => name.to_ascii_uppercase(),
+            Self::Camel => lower_first(name),
+            Self::Snake => snake(),
+            Self::ScreamingSnake => snake().to_ascii_uppercase(),
+            Self::Kebab => snake().replace('_', "-"),
+            Self::ScreamingKebab => snake().to_ascii_uppercase().replace('_', "-"),
+        }
+    }
+}
+
+/// The `#[serde(…)]` items of `attrs`; serde keys rescript-rs doesn't
+/// read are left to serde.
+fn serde_metas(attrs: &[Attribute]) -> Result<Vec<syn::Meta>> {
+    use syn::{punctuated::Punctuated, Meta, Token};
+
+    let mut out = vec![];
+
+    for attr in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        out.extend(attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?);
+    }
+
+    Ok(out)
+}
+
+/// The string of `key = "value"`.
+fn meta_string(meta: &syn::Meta) -> Result<String> {
+    match meta {
+        syn::Meta::NameValue(syn::MetaNameValue {
+            value:
+                Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }),
+            ..
+        }) => Ok(s.value()),
+        _ => Err(Error::new(
+            meta.span(),
+            "rescript-rs reads this serde attribute only as key = \"value\"",
+        )),
+    }
 }
 
 fn rescript_attrs(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
@@ -115,8 +231,31 @@ fn string(meta: &syn::meta::ParseNestedMeta) -> Result<String> {
 }
 
 impl ContainerAttr {
-    fn parse(attrs: &[Attribute]) -> Result<Self> {
+    fn parse(attrs: &[Attribute], is_enum: bool) -> Result<Self> {
         let mut out = Self::default();
+
+        for meta in serde_metas(attrs)? {
+            let path = meta.path();
+
+            if path.is_ident("rename_all") {
+                let rule = RenameRule::parse(&meta_string(&meta)?, meta.span())?;
+
+                if is_enum {
+                    out.rename_variants = Some(rule);
+                } else {
+                    out.rename_fields = Some(rule);
+                }
+            } else if path.is_ident("rename_all_fields") {
+                out.rename_fields = Some(RenameRule::parse(&meta_string(&meta)?, meta.span())?);
+            } else if path.is_ident("tag") {
+                out.tag = Some(meta_string(&meta)?);
+            } else if path.is_ident("content") || path.is_ident("untagged") {
+                return Err(Error::new(
+                    meta.span(),
+                    "spice has no adjacently tagged or untagged enums",
+                ));
+            }
+        }
 
         for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
@@ -147,7 +286,7 @@ impl ContainerAttr {
                         return Err(meta.error("only rename_all = \"camelCase\" is supported"));
                     }
 
-                    out.camel_case = true;
+                    out.rename_fields = Some(RenameRule::Camel);
                 } else if meta.path.is_ident("crate") {
                     out.krate = Some(meta.value()?.parse::<LitStr>()?.parse()?);
                 } else {
@@ -165,6 +304,24 @@ impl ContainerAttr {
 impl FieldAttr {
     fn parse(attrs: &[Attribute]) -> Result<Self> {
         let mut out = Self::default();
+
+        for meta in serde_metas(attrs)? {
+            let path = meta.path();
+
+            if path.is_ident("rename") {
+                out.serde_rename = Some(meta_string(&meta)?);
+            } else if path.is_ident("default") {
+                out.serde_default = Some(match &meta {
+                    syn::Meta::Path(_) => None,
+                    meta => Some(syn::parse_str(&meta_string(meta)?)?),
+                });
+            } else if path.is_ident("flatten") || path.is_ident("skip") {
+                return Err(Error::new(
+                    meta.span(),
+                    "spice can't flatten or skip a field",
+                ));
+            }
+        }
 
         for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
@@ -199,6 +356,17 @@ impl FieldAttr {
 impl VariantAttr {
     fn parse(attrs: &[Attribute]) -> Result<Self> {
         let mut out = Self::default();
+
+        for meta in serde_metas(attrs)? {
+            if meta.path().is_ident("rename") {
+                out.alias = Some(meta_string(&meta)?);
+            } else if meta.path().is_ident("other") {
+                return Err(Error::new(
+                    meta.span(),
+                    "spice has no catch-all constructor (serde's other) yet",
+                ));
+            }
+        }
 
         for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
@@ -360,7 +528,7 @@ struct ParsedField {
     docs: String,
 }
 
-fn parse_fields(fields: &syn::FieldsNamed, camel_case: bool) -> Result<Vec<ParsedField>> {
+fn parse_fields(fields: &syn::FieldsNamed, rename: Option<RenameRule>) -> Result<Vec<ParsedField>> {
     fields
         .named
         .iter()
@@ -368,10 +536,26 @@ fn parse_fields(fields: &syn::FieldsNamed, camel_case: bool) -> Result<Vec<Parse
             let ident = field.ident.clone().expect("named field");
             let attr = FieldAttr::parse(&field.attrs)?;
             let raw = ident.unraw().to_string();
-            let rescript_name =
-                attr.name
-                    .clone()
-                    .unwrap_or_else(|| if camel_case { camel(&raw) } else { raw });
+            let json_name = attr
+                .serde_rename
+                .clone()
+                .or_else(|| attr.name.clone())
+                .unwrap_or_else(|| rename.map_or_else(|| raw.clone(), |rule| rule.field(&raw)));
+            let rescript_name = attr.name.clone().unwrap_or_else(|| {
+                let identifier = json_name
+                    .starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                    && json_name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_');
+
+                match identifier {
+                    true if RESCRIPT_KEYWORDS.contains(&json_name.as_str()) => {
+                        format!("{json_name}_")
+                    }
+                    true => json_name.clone(),
+                    false => raw.clone(),
+                }
+            });
 
             if RESCRIPT_KEYWORDS.contains(&rescript_name.as_str()) {
                 return Err(Error::new(
@@ -382,12 +566,19 @@ fn parse_fields(fields: &syn::FieldsNamed, camel_case: bool) -> Result<Vec<Parse
                 ));
             }
 
-            let key = attr.key.clone().unwrap_or_else(|| rescript_name.clone());
+            let key = attr.key.clone().unwrap_or(json_name);
 
             if PROTOTYPE_KEYS.contains(&key.as_str()) {
                 return Err(Error::new(
                     field.span(),
                     format!("spice would read `{key}` from Object.prototype when it is missing"),
+                ));
+            }
+
+            if attr.serde_default.is_some() && attr.default.is_some() {
+                return Err(Error::new(
+                    field.span(),
+                    "a field has a serde default or a ReScript one, not both",
                 ));
             }
 
@@ -667,6 +858,16 @@ fn derive_serde(
     Ok((decode, encode))
 }
 
+/// The Rust value of a `#[serde(default …)]` field.
+fn serde_default(field: &ParsedField) -> TokenStream {
+    let ty = &field.ty;
+
+    match field.attr.serde_default.as_ref().expect("serde default") {
+        Some(path) => quote!(#path()),
+        None => quote!(<#ty as ::std::default::Default>::default()),
+    }
+}
+
 struct Gen {
     krate: Path,
 }
@@ -699,17 +900,33 @@ impl Gen {
 
     /// `  @spice.key("K") …\n  name?: type,` for one record field.
     fn field_declaration(&self, field: &ParsedField, inline: bool) -> TokenStream {
+        let spice = self.spice();
         let mut attrs = vec![];
 
         if field.key != field.rescript_name {
-            attrs.push(format!("@spice.key({:?})", field.key));
+            let key = format!("@spice.key({:?})", field.key);
+
+            attrs.push(quote!(::std::string::String::from(#key)));
         }
 
         if let Some(default) = &field.attr.default {
-            attrs.push(format!("@spice.default({default})"));
+            let default = format!("@spice.default({default})");
+
+            attrs.push(quote!(::std::string::String::from(#default)));
+        } else if field.attr.serde_default.is_some() {
+            let value = serde_default(field);
+            let ty = &field.ty;
+            let missing = format!(
+                "the default of `{}` has no ReScript value (Spice::rescript_value)",
+                field.rescript_name
+            );
+
+            attrs.push(quote!(format!(
+                "@spice.default({})",
+                #spice::Spice::rescript_value(&{ let value: #ty = #value; value }).expect(#missing),
+            )));
         }
 
-        let attrs = attrs.join(" ");
         let name = format!(
             "{}{}",
             field.rescript_name,
@@ -722,24 +939,24 @@ impl Gen {
             .map(|c| format!("@spice.codec({c}) "))
             .unwrap_or_default();
         let ty = self.field_type(field);
+        let attrs = quote!(::std::vec::Vec::<::std::string::String>::from([#(#attrs),*]).join(" "));
 
         if inline {
-            let attrs = if attrs.is_empty() {
-                attrs
-            } else {
-                format!("{attrs} ")
-            };
+            quote!({
+                let attrs: ::std::string::String = #attrs;
+                let attrs = if attrs.is_empty() { attrs } else { format!("{attrs} ") };
 
-            quote!(format!("{}{}: {}{}", #attrs, #name, #codec, #ty))
+                format!("{}{}: {}{}", attrs, #name, #codec, #ty)
+            })
         } else {
             let docs = &field.docs;
-            let attrs = if attrs.is_empty() {
-                attrs
-            } else {
-                format!("  {attrs}\n")
-            };
 
-            quote!(format!("{}{}  {}: {}{},\n", #docs, #attrs, #name, #codec, #ty))
+            quote!({
+                let attrs: ::std::string::String = #attrs;
+                let attrs = if attrs.is_empty() { attrs } else { format!("  {attrs}\n") };
+
+                format!("{}{}  {}: {}{},\n", #docs, attrs, #name, #codec, #ty)
+            })
         }
     }
 
@@ -773,6 +990,7 @@ impl Gen {
             let decode = self.decode_fn(field);
             let default = match (&field.attr.rust_default, &field.attr.default) {
                 (Some(expr), _) => Some(quote!(#expr)),
+                (None, None) if field.attr.serde_default.is_some() => Some(serde_default(field)),
                 (None, Some(rescript)) => {
                     Some(rust_default(rescript, &field.ty, field.ident.span())?)
                 }
@@ -835,7 +1053,7 @@ impl Gen {
 }
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
-    let container = ContainerAttr::parse(&input.attrs)?;
+    let container = ContainerAttr::parse(&input.attrs, matches!(input.data, Data::Enum(_)))?;
     let krate = container
         .krate
         .clone()
@@ -863,6 +1081,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     };
 
     let samples = samples(&gen, &input.data)?;
+    let rescript_value = rescript_value(&gen, &container, &input.data)?;
     let (body, decode, encode) = match &input.data {
         Data::Struct(_) if container.tag.is_some() || container.legacy || container.poly => {
             return Err(Error::new(
@@ -940,9 +1159,118 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             fn encode<H: #spice::Host>(&self) -> #spice::Value {
                 #encode
             }
+
+            #[allow(unreachable_code, clippy::needless_return)]
+            fn rescript_value(&self) -> ::std::option::Option<::std::string::String> {
+                #rescript_value
+            }
         }
 
         #declare
+    })
+}
+
+/// `Spice::rescript_value`: the value as a ReScript literal.
+fn rescript_value(gen: &Gen, container: &ContainerAttr, data: &Data) -> Result<TokenStream> {
+    let spice = gen.spice();
+    // `name: value` for each field, or no value if any field has none.
+    let record = |fields: &[ParsedField], access: &dyn Fn(&Ident) -> TokenStream| {
+        let parts = fields.iter().map(|field| {
+            let name = &field.rescript_name;
+            let value = access(&field.ident);
+
+            if field.attr.with.is_some() {
+                return quote!(return ::std::option::Option::None;);
+            }
+
+            if field.attr.optional {
+                quote! {
+                    if let ::std::option::Option::Some(value) = #value {
+                        parts.push(format!("{}: {}", #name, #spice::Spice::rescript_value(value)?));
+                    }
+                }
+            } else {
+                quote!(parts.push(format!("{}: {}", #name, #spice::Spice::rescript_value(#value)?));)
+            }
+        });
+
+        quote!({
+            let mut parts: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+
+            #(#parts)*
+
+            parts.join(", ")
+        })
+    };
+
+    Ok(match data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(named) => {
+                let fields = parse_fields(named, container.rename_fields)?;
+                let body = record(&fields, &|field| quote!(&self.#field));
+
+                quote! {
+                    let body = #body;
+
+                    ::std::option::Option::Some(format!(
+                        "({{{}}}: {})",
+                        body,
+                        <Self as #spice::Spice>::rescript_type(),
+                    ))
+                }
+            }
+            Fields::Unnamed(_) => quote!(#spice::Spice::rescript_value(&self.0)),
+            Fields::Unit => quote!(::std::option::Option::None),
+        },
+        Data::Enum(data) => {
+            let mut arms = vec![];
+
+            for variant in &data.variants {
+                let constructor = &variant.ident;
+                let name = constructor.unraw().to_string();
+                let head = if container.poly {
+                    quote!(format!("#{}", #name))
+                } else {
+                    quote!(format!(
+                        "{}{}",
+                        #spice::rescript_scope(&<Self as #spice::Spice>::rescript_type()),
+                        #name,
+                    ))
+                };
+
+                arms.push(match &variant.fields {
+                    Fields::Unit => quote!(Self::#constructor => ::std::option::Option::Some(#head),),
+                    Fields::Unnamed(unnamed) => {
+                        let vars: Vec<Ident> =
+                            (0..unnamed.unnamed.len()).map(|i| format_ident!("v{i}")).collect();
+
+                        quote! {
+                            Self::#constructor(#(#vars),*) => {
+                                let args = [#(#spice::Spice::rescript_value(#vars)?),*];
+
+                                ::std::option::Option::Some(format!("{}({})", #head, args.join(", ")))
+                            }
+                        }
+                    }
+                    Fields::Named(named) => {
+                        let fields = parse_fields(named, container.rename_fields)?;
+                        let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
+                        let body = record(&fields, &|field| quote!(#field));
+
+                        quote! {
+                            Self::#constructor { #(#idents),* } => {
+                                let body = #body;
+
+                                ::std::option::Option::Some(format!("{}({{{}}})", #head, body))
+                            }
+                        }
+                    }
+                });
+            }
+
+            quote!(match self { #(#arms)* })
+        }
+        Data::Union(_) => quote!(::std::option::Option::None),
     })
 }
 
@@ -1025,7 +1353,7 @@ fn derive_struct(
 
     match &data.fields {
         Fields::Named(named) => {
-            let fields = parse_fields(named, container.camel_case)?;
+            let fields = parse_fields(named, container.rename_fields)?;
             let lines = fields.iter().map(|f| gen.field_declaration(f, false));
             let body = quote!(format!(" {{\n{}}}", [#(#lines),*].concat()));
             let decode_fields = gen.decode_fields(&fields, quote!(json))?;
@@ -1071,7 +1399,13 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         .variants
         .iter()
         .map(|variant| {
-            let alias = VariantAttr::parse(&variant.attrs)?.alias;
+            let name = variant.ident.unraw().to_string();
+            let alias = VariantAttr::parse(&variant.attrs)?.alias.or_else(|| {
+                container
+                    .rename_variants
+                    .map(|rule| rule.variant(&name))
+                    .filter(|renamed| *renamed != name)
+            });
             let fields = match &variant.fields {
                 Fields::Named(_) if container.poly => {
                     return Err(Error::new(
@@ -1079,13 +1413,13 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
                         "a polymorphic variant constructor can't have named fields",
                     ))
                 }
-                Fields::Named(named) => Some(parse_fields(named, container.camel_case)?),
+                Fields::Named(named) => Some(parse_fields(named, container.rename_fields)?),
                 _ => None,
             };
 
             Ok(ParsedVariant {
                 variant,
-                name: variant.ident.unraw().to_string(),
+                name,
                 alias,
                 fields,
             })

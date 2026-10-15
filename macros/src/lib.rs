@@ -485,7 +485,7 @@ fn used_type_params<'ty, 'out>(
 /// `Declare`, given a module) instead: a Rust codec and a ReScript
 /// declaration that ppx-spice reads and writes the same way. See
 /// `rescript_rs::spice`.
-#[proc_macro_derive(ReScript, attributes(rescript))]
+#[proc_macro_derive(ReScript, attributes(rescript, serde))]
 pub fn rescript(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     match entry(input) {
         Err(err) => err.to_compile_error(),
