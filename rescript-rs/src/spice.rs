@@ -167,6 +167,38 @@ pub trait Spice: Sized + Clone {
 
     /// `t_encode`.
     fn encode<H: Host>(&self) -> Value;
+
+    /// The value as a ReScript expression, e.g. `Some(SubtitleGrouping.Chunked)`,
+    /// with constructors and record types qualified by their module: what
+    /// `@spice.default(…)` is written with for a `#[serde(default)]` field.
+    /// `None` when the type has no literal form.
+    fn rescript_value(&self) -> Option<String> {
+        None
+    }
+}
+
+/// A ReScript string literal.
+pub fn rescript_string(text: &str) -> String {
+    serde_json::to_string(text).expect("a string serializes")
+}
+
+/// A ReScript float literal, `None` for a value that has none.
+pub fn rescript_float(value: f64) -> Option<String> {
+    if !value.is_finite() {
+        return None;
+    }
+
+    let text = value.to_string();
+
+    Some(if text.contains(['.', 'e']) { text } else { format!("{text}.") })
+}
+
+/// The module part of a qualified ReScript type (`Module.t` gives
+/// `Module.`), which qualifies its constructors and record literals.
+pub fn rescript_scope(rescript_type: &str) -> String {
+    rescript_type
+        .rsplit_once('.')
+        .map_or_else(String::new, |(module, _)| format!("{module}."))
 }
 
 /// `samples` of a type, or none while that type's samples are already
@@ -423,6 +455,10 @@ impl Spice for String {
     fn encode<H: Host>(&self) -> Value {
         Value::String(self.clone())
     }
+
+    fn rescript_value(&self) -> Option<String> {
+        Some(rescript_string(self))
+    }
 }
 
 /// `Math.floor(n) | 0`: wraps into the 32-bit range, an infinity is 0.
@@ -461,6 +497,10 @@ impl Spice for i32 {
     fn encode<H: Host>(&self) -> Value {
         H::number(f64::from(*self))
     }
+
+    fn rescript_value(&self) -> Option<String> {
+        Some(self.to_string())
+    }
 }
 
 impl Spice for f64 {
@@ -481,6 +521,10 @@ impl Spice for f64 {
 
     fn encode<H: Host>(&self) -> Value {
         H::number(*self)
+    }
+
+    fn rescript_value(&self) -> Option<String> {
+        rescript_float(*self)
     }
 }
 
@@ -503,6 +547,10 @@ impl Spice for bool {
     fn encode<H: Host>(&self) -> Value {
         Value::Bool(*self)
     }
+
+    fn rescript_value(&self) -> Option<String> {
+        Some(self.to_string())
+    }
 }
 
 impl Spice for () {
@@ -520,6 +568,10 @@ impl Spice for () {
 
     fn encode<H: Host>(&self) -> Value {
         H::number(0.0)
+    }
+
+    fn rescript_value(&self) -> Option<String> {
+        Some("()".into())
     }
 }
 
@@ -553,6 +605,10 @@ impl<T: Spice> Spice for Box<T> {
 
     fn encode<H: Host>(&self) -> Value {
         (**self).encode::<H>()
+    }
+
+    fn rescript_value(&self) -> Option<String> {
+        (**self).rescript_value()
     }
 }
 
@@ -609,6 +665,15 @@ impl<T: Spice> Spice for Vec<T> {
     fn encode<H: Host>(&self) -> Value {
         Value::Array(self.iter().map(T::encode::<H>).collect())
     }
+
+    fn rescript_value(&self) -> Option<String> {
+        let items = self
+            .iter()
+            .map(Spice::rescript_value)
+            .collect::<Option<Vec<_>>>()?;
+
+        Some(format!("[{}]", items.join(", ")))
+    }
 }
 
 /// `option<T>` where it is a value: in an array, tuple, variant payload or
@@ -637,6 +702,13 @@ impl<T: Spice> Spice for Option<T> {
         match self {
             Some(value) => value.encode::<H>(),
             None => Value::Null,
+        }
+    }
+
+    fn rescript_value(&self) -> Option<String> {
+        match self {
+            Some(value) => Some(format!("Some({})", value.rescript_value()?)),
+            None => Some("None".into()),
         }
     }
 }
@@ -813,6 +885,12 @@ macro_rules! tuple {
 
             fn encode<HOST: Host>(&self) -> Value {
                 Value::Array(vec![$(self.$index.encode::<HOST>()),+])
+            }
+
+            fn rescript_value(&self) -> Option<String> {
+                let items = [$(self.$index.rescript_value()?),+];
+
+                Some(format!("({})", items.join(", ")))
             }
         }
     };
