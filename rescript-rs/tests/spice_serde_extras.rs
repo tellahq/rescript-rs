@@ -75,6 +75,58 @@ pub enum Background {
     Image(String),
 }
 
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Extras", name = "mixed")]
+pub enum Mixed {
+    Circle(f64),
+    Rect {
+        w: f64,
+    },
+    #[serde(other)]
+    UnknownMixed,
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, legacy, module = "Extras", name = "legacyOther")]
+pub enum LegacyOther {
+    Known,
+    #[serde(other)]
+    UnknownLegacy,
+}
+
+fn failure(path: &str, message: &str, value: Value) -> Failure {
+    Failure::Decode(DecodeError {
+        path: path.into(),
+        message: message.into(),
+        value,
+    })
+}
+
+/// As serde: `other` is a unit variant, so an unknown name keyed to a
+/// value and a bare name of a variant with data don't decode to it.
+#[test]
+fn other_is_a_unit_variant() {
+    assert_eq!(decode(json!({"Square": null})), Some(Mixed::UnknownMixed));
+    assert_eq!(decode(json!("Square")), Some(Mixed::UnknownMixed));
+    assert_eq!(
+        Mixed::decode::<Plain>(&json!({"Square": 5})).unwrap_err(),
+        failure(".Square", "Expected null", json!(5))
+    );
+    assert_eq!(
+        Mixed::decode::<Plain>(&json!("Rect")).unwrap_err(),
+        failure("", "Invalid variant constructor", json!("Rect"))
+    );
+    assert_eq!(decode(json!(["Zzz"])), Some(LegacyOther::UnknownLegacy));
+    assert_eq!(
+        LegacyOther::decode::<Plain>(&json!(["Zzz", 1])).unwrap_err(),
+        failure(
+            "",
+            "Invalid number of arguments to variant constructor",
+            json!(["Zzz", 1])
+        )
+    );
+}
+
 #[test]
 fn declarations() {
     let rendered = Module::new("Extras")

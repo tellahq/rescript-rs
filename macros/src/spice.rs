@@ -743,6 +743,8 @@ fn derive_serde(
         encodes.push(quote!(Self::#constructor(v0) => #spice::Spice::encode::<H>(v0),));
     }
 
+    let has_other = variants.iter().any(|v| v.other);
+
     for v in variants.iter().filter(|v| !v.untagged) {
         let constructor = &v.variant.ident;
         let name = serde_name(v);
@@ -752,6 +754,12 @@ fn derive_serde(
             .reduce(|a, b| quote!(#a | #b))
             .expect("a name");
         let name_str = serde_name(v);
+
+        // As serde: a bare string naming a variant with data is an error,
+        // not the `#[serde(other)]` variant.
+        if has_other && !matches!(v.variant.fields, Fields::Unit) {
+            names.push(quote!(#name => Err(#spice::serde::unknown(json)),));
+        }
         let json_name = quote!(#spice::Value::String(::std::string::String::from(#name_str)));
         let tag_entry = tag.map(|tag| {
             quote!((::std::string::String::from(#tag), ::std::option::Option::Some(#json_name)))
@@ -895,14 +903,32 @@ fn derive_serde(
                 _ => #unknown,
             }
         },
-        None => quote! {
-            let (name, payload) = #spice::serde::external(&map, json)?;
+        None => {
+            // As serde: an unknown name keyed to anything but null is an
+            // error.
+            let unknown_key = match variants.iter().find(|v| v.other) {
+                Some(v) => {
+                    let constructor = &v.variant.ident;
 
-            match name {
-                #(#objects)*
-                _ => #unknown,
+                    quote! {
+                        #spice::serde::at(
+                            #spice::serde::unit::<H>(payload).map(|()| Self::#constructor),
+                            name,
+                        )
+                    }
+                }
+                None => unknown.clone(),
+            };
+
+            quote! {
+                let (name, payload) = #spice::serde::external(&map, json)?;
+
+                match name {
+                    #(#objects)*
+                    _ => #unknown_key,
+                }
             }
-        },
+        }
     };
     let legacy = container.legacy;
     let names = if tag.is_none() || legacy {
@@ -1701,10 +1727,15 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     }
 
     let unknown = match variants.iter().find(|v| v.other) {
+        // A unit variant: no arguments.
         Some(v) => {
             let constructor = &v.variant.ident;
 
-            quote!(Ok(Self::#constructor))
+            quote! {{
+                #spice::variant::arity_of(#kind, &items, 0, json)?;
+
+                Ok(Self::#constructor)
+            }}
         }
         None => quote!(Err(#spice::variant::unknown_of(#kind, &items))),
     };
