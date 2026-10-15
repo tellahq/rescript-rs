@@ -188,16 +188,16 @@ type rec t =
   | Unit
   | Point(SerdePoint.t)
   | Rec({a: int, b?: string})
-  | @as(\"full\") Full({screenFit: string, punch_in: bool})
+  | @spice.as(\"full\") Full({screenFit: string, punch_in: bool})
   | Tree({children: array<SerdeInt.t>})"
     );
     assert_eq!(
         Names::declaration(),
         "@spice.serde({legacy: true})
 type t =
-  | @as(\"하나\") Hana
-  | @as(\"with space\") Space
-  | @as(\"\") Empty"
+  | @spice.as(\"하나\") Hana
+  | @spice.as(\"with space\") Space
+  | @spice.as(\"\") Empty"
     );
     assert!(DecodeOnly::declaration()
         .starts_with("@spice.serde({legacy: true}) @spice.decode\ntype t ="));

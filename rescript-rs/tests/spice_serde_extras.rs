@@ -142,19 +142,19 @@ fn declarations() {
         rendered,
         r#"@spice.serde
 type shadow =
-  | @as("NONE") @spice.other None
-  | @as("REGULAR") Regular
-  | @as("DEEP") Deep
+  | @spice.as("NONE") @spice.other None
+  | @spice.as("REGULAR") Regular
+  | @spice.as("DEEP") Deep
 
 @spice.serde({legacy: true})
 type scope =
-  | @as("PUBLIC") @spice.alias("Public") Public
-  | @as("ORG") @spice.alias("OrgListed") @spice.alias("ORG_LISTED") Org
-  | @as("PRIVATE") @spice.alias("Invite") Private
+  | @spice.as("PUBLIC") @spice.alias("Public") Public
+  | @spice.as("ORG") @spice.alias("OrgListed") @spice.alias("ORG_LISTED") Org
+  | @spice.as("PRIVATE") @spice.alias("Invite") Private
 
 @spice.serde
 type codec =
-  | @as("prores") ProRes
+  | @spice.as("prores") ProRes
   | @spice.untagged Other(string)
 
 @spice.serde @tag("type")

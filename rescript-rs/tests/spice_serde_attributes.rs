@@ -82,9 +82,9 @@ fn declarations() {
         rendered,
         r#"@spice.serde
 type grouping =
-  | @as("chunked") Chunked
-  | @as("single_word") SingleWord
-  | @as("WORDS") Words
+  | @spice.as("chunked") Chunked
+  | @spice.as("single_word") SingleWord
+  | @spice.as("WORDS") Words
 
 @spice
 type point = {

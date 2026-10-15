@@ -43,7 +43,7 @@ enum Shape {
 }
 
 #[derive(ReScript, Debug, Clone, PartialEq)]
-#[rescript(codec, module = "Color", name = "t", attrs = "@genType")]
+#[rescript(codec, runtime_names, module = "Color", name = "t", attrs = "@genType")]
 enum Color {
     #[rescript(rename = "red")]
     Red,

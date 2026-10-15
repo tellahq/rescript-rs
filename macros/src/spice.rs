@@ -80,6 +80,10 @@ struct ContainerAttr {
     krate: Option<Path>,
     /// A polymorphic variant, `[#A | #B]`.
     poly: bool,
+    /// `runtime_names`: a renamed constructor is also called by its JSON
+    /// name at runtime, ReScript's `@as(…)`; otherwise only its JSON name
+    /// changes, `@spice.as(…)`.
+    runtime_names: bool,
     /// `#[rescript(fallback = "path")]`: what anything the decoder rejects
     /// decodes to, `@spice.fallback(…)`.
     fallback: Option<Path>,
@@ -287,6 +291,8 @@ impl ContainerAttr {
                     out.legacy_write = true;
                 } else if meta.path.is_ident("poly") {
                     out.poly = true;
+                } else if meta.path.is_ident("runtime_names") {
+                    out.runtime_names = true;
                 } else if meta.path.is_ident("tag") {
                     out.tag = Some(string(&meta)?);
                 } else if meta.path.is_ident("rename_all") {
@@ -1204,10 +1210,21 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let samples = samples(&gen, &input.data)?;
     let rescript_value = rescript_value(&gen, &container, &input.data)?;
     let (body, decode, encode) = match &input.data {
-        Data::Struct(_) if container.tag.is_some() || container.legacy || container.poly => {
+        Data::Struct(_)
+            if container.tag.is_some()
+                || container.legacy
+                || container.poly
+                || container.runtime_names =>
+        {
             return Err(Error::new(
                 input.span(),
-                "tag, legacy and poly are for enums",
+                "tag, legacy, poly and runtime_names are for enums",
+            ))
+        }
+        Data::Enum(_) if container.poly && container.runtime_names => {
+            return Err(Error::new(
+                input.span(),
+                "a polymorphic variant has no runtime names (ReScript has no @as on them)",
             ))
         }
         Data::Struct(data) => derive_struct(&gen, &container, data, ident)?,
@@ -1584,10 +1601,9 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         let alias = v
             .alias
             .as_ref()
-            .map(|a| match container.poly {
-                // ReScript has no @as on polymorphic variants.
-                true => format!("@spice.as({a:?}) "),
-                false => format!("@as({a:?}) "),
+            .map(|a| match container.runtime_names {
+                true => format!("@as({a:?}) "),
+                false => format!("@spice.as({a:?}) "),
             })
             .unwrap_or_default();
         let alias = format!(
