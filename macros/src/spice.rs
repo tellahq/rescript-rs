@@ -1381,13 +1381,20 @@ fn rescript_value(gen: &Gen, container: &ContainerAttr, data: &Data) -> Result<T
                 let fields = parse_fields(named, container.rename_fields)?;
                 let body = record(&fields, &|field| quote!(&self.#field));
 
+                // The first label qualified by the record's module, `{M.a: …}`,
+                // names the type: `rescript format` breaks `({…}: M.t)` in an
+                // attribute.
                 quote! {
                     let body = #body;
 
+                    if body.is_empty() {
+                        return ::std::option::Option::None;
+                    }
+
                     ::std::option::Option::Some(format!(
-                        "({{{}}}: {})",
+                        "{{{}{}}}",
+                        #spice::rescript_scope(&<Self as #spice::Spice>::rescript_type()),
                         body,
-                        <Self as #spice::Spice>::rescript_type(),
                     ))
                 }
             }
