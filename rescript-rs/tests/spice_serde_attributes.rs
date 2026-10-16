@@ -110,7 +110,7 @@ type t = {
   note: option<string>,
   @spice.default(40.)
   fontSize: float,
-  @spice.default(({x: 0.5, y: 1.}: point))
+  @spice.default({x: 0.5, y: 1.})
   focus: point,
 }
 
