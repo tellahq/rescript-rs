@@ -86,13 +86,13 @@ type grouping =
   | @spice.as("single_word") SingleWord
   | @spice.as("WORDS") Words
 
-@spice
+@spice.serde
 type point = {
   x: float,
   y: float,
 }
 
-@spice
+@spice.serde
 type t = {
   storyId: string,
   @spice.key("type")
@@ -110,7 +110,7 @@ type t = {
   note: option<string>,
   @spice.default(40.)
   fontSize: float,
-  @spice.default(({x: 0.5, y: 1.}: point))
+  @spice.default({x: 0.5, y: 1.})
   focus: point,
 }
 
