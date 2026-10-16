@@ -80,6 +80,10 @@ struct ContainerAttr {
     krate: Option<Path>,
     /// A polymorphic variant, `[#A | #B]`.
     poly: bool,
+    /// `runtime_names`: a renamed constructor is also called by its JSON
+    /// name at runtime, ReScript's `@as(…)`; otherwise only its JSON name
+    /// changes, `@spice.as(…)`.
+    runtime_names: bool,
     /// `#[rescript(fallback = "path")]`: what anything the decoder rejects
     /// decodes to, `@spice.fallback(…)`.
     fallback: Option<Path>,
@@ -287,6 +291,8 @@ impl ContainerAttr {
                     out.legacy_write = true;
                 } else if meta.path.is_ident("poly") {
                     out.poly = true;
+                } else if meta.path.is_ident("runtime_names") {
+                    out.runtime_names = true;
                 } else if meta.path.is_ident("tag") {
                     out.tag = Some(string(&meta)?);
                 } else if meta.path.is_ident("rename_all") {
@@ -631,6 +637,18 @@ fn parse_fields(fields: &syn::FieldsNamed, rename: Option<RenameRule>) -> Result
 /// decoder's own (`json`, `fields`, `payload`, …).
 fn field_var(ident: &Ident) -> Ident {
     format_ident!("spice_field_{}", ident.unraw())
+}
+
+/// A polymorphic variant constructor, `#Name`, or `#"name"` when the name
+/// isn't an identifier.
+fn poly_tag(name: &str) -> String {
+    let identifier = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+
+    match identifier {
+        true => format!("#{name}"),
+        false => format!("#{name:?}"),
+    }
 }
 
 /// The JSON name of a `@spice.serde` constructor.
@@ -1204,10 +1222,15 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let samples = samples(&gen, &input.data)?;
     let rescript_value = rescript_value(&gen, &container, &input.data)?;
     let (body, decode, encode) = match &input.data {
-        Data::Struct(_) if container.tag.is_some() || container.legacy || container.poly => {
+        Data::Struct(_)
+            if container.tag.is_some()
+                || container.legacy
+                || container.poly
+                || container.runtime_names =>
+        {
             return Err(Error::new(
                 input.span(),
-                "tag, legacy and poly are for enums",
+                "tag, legacy, poly and runtime_names are for enums",
             ))
         }
         Data::Struct(data) => derive_struct(&gen, &container, data, ident)?,
@@ -1370,7 +1393,22 @@ fn rescript_value(gen: &Gen, container: &ContainerAttr, data: &Data) -> Result<T
                 let constructor = &variant.ident;
                 let name = constructor.unraw().to_string();
                 let head = if container.poly {
-                    quote!(format!("#{}", #name))
+                    let tag = match container.runtime_names {
+                        true => {
+                            let attr = VariantAttr::parse(&variant.attrs)?;
+                            let json = attr
+                                .alias
+                                .or_else(|| {
+                                    container.rename_variants.map(|rule| rule.variant(&name))
+                                })
+                                .unwrap_or(name);
+
+                            poly_tag(&json)
+                        }
+                        false => poly_tag(&name),
+                    };
+
+                    quote!(::std::string::String::from(#tag))
                 } else {
                     quote!(format!(
                         "{}{}",
@@ -1545,12 +1583,18 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         .map(|variant| {
             let name = variant.ident.unraw().to_string();
             let attr = VariantAttr::parse(&variant.attrs)?;
-            let alias = attr.alias.or_else(|| {
+            let alias = attr.alias.clone().or_else(|| {
                 container
                     .rename_variants
                     .map(|rule| rule.variant(&name))
                     .filter(|renamed| *renamed != name)
             });
+            // A polymorphic variant's runtime value is its tag: with
+            // runtime_names, the tag is the JSON name.
+            let (name, alias) = match (container.poly && container.runtime_names, alias) {
+                (true, Some(json)) => (json, None),
+                (_, alias) => (name, alias),
+            };
             let fields = match &variant.fields {
                 Fields::Named(_) if container.poly => {
                     return Err(Error::new(
@@ -1579,15 +1623,17 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     let mut lines = vec![];
 
     for v in &variants {
-        let constructor = format!("{}{}", if container.poly { "#" } else { "" }, v.name);
+        let constructor = match container.poly {
+            true => poly_tag(&v.name),
+            false => v.name.clone(),
+        };
         let docs = docs(&v.variant.attrs, "  ");
         let alias = v
             .alias
             .as_ref()
-            .map(|a| match container.poly {
-                // ReScript has no @as on polymorphic variants.
-                true => format!("@spice.as({a:?}) "),
-                false => format!("@as({a:?}) "),
+            .map(|a| match container.runtime_names {
+                true => format!("@as({a:?}) "),
+                false => format!("@spice.as({a:?}) "),
             })
             .unwrap_or_default();
         let alias = format!(

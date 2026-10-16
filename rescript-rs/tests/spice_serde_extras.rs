@@ -127,6 +127,32 @@ fn other_is_a_unit_variant() {
     );
 }
 
+/// With runtime_names, a polymorphic variant's tag is its JSON name.
+#[derive(ReScript, Debug, Clone, Copy, PartialEq)]
+#[rescript(codec, poly, runtime_names, module = "Extras", name = "frame")]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Frame {
+    None,
+    #[serde(rename = "BLOB-OUTLINE")]
+    BlobOutline,
+    Round,
+}
+
+#[test]
+fn poly_runtime_names() {
+    assert_eq!(
+        Module::new("Extras").with::<Frame>().render(),
+        "// With runtime_names, a polymorphic variant's tag is its JSON name.\n@spice.serde\ntype frame = [\n  | #NONE\n  | #\"BLOB-OUTLINE\"\n  | #ROUND\n]\n"
+    );
+    assert_eq!(
+        Frame::BlobOutline.rescript_value().unwrap(),
+        "#\"BLOB-OUTLINE\""
+    );
+    assert_eq!(Frame::Round.rescript_value().unwrap(), "#ROUND");
+    assert_eq!(decode(json!("BLOB-OUTLINE")), Some(Frame::BlobOutline));
+    assert_eq!(Frame::None.encode::<Plain>(), json!("NONE"));
+}
+
 #[test]
 fn declarations() {
     let rendered = Module::new("Extras")
@@ -142,19 +168,19 @@ fn declarations() {
         rendered,
         r#"@spice.serde
 type shadow =
-  | @as("NONE") @spice.other None
-  | @as("REGULAR") Regular
-  | @as("DEEP") Deep
+  | @spice.as("NONE") @spice.other None
+  | @spice.as("REGULAR") Regular
+  | @spice.as("DEEP") Deep
 
 @spice.serde({legacy: true})
 type scope =
-  | @as("PUBLIC") @spice.alias("Public") Public
-  | @as("ORG") @spice.alias("OrgListed") @spice.alias("ORG_LISTED") Org
-  | @as("PRIVATE") @spice.alias("Invite") Private
+  | @spice.as("PUBLIC") @spice.alias("Public") Public
+  | @spice.as("ORG") @spice.alias("OrgListed") @spice.alias("ORG_LISTED") Org
+  | @spice.as("PRIVATE") @spice.alias("Invite") Private
 
 @spice.serde
 type codec =
-  | @as("prores") ProRes
+  | @spice.as("prores") ProRes
   | @spice.untagged Other(string)
 
 @spice.serde @tag("type")
