@@ -62,6 +62,8 @@ struct ContainerAttr {
     module: Option<String>,
     name: Option<String>,
     attrs: Option<String>,
+    /// `gen_type`: also export the type to TypeScript, `@genType`.
+    gen_type: bool,
     /// How field names become JSON keys (and ReScript field names).
     rename_fields: Option<RenameRule>,
     /// How variant names become their JSON names.
@@ -278,6 +280,8 @@ impl ContainerAttr {
                     out.module = Some(string(&meta)?);
                 } else if meta.path.is_ident("name") {
                     out.name = Some(string(&meta)?);
+                } else if meta.path.is_ident("gen_type") {
+                    out.gen_type = true;
                 } else if meta.path.is_ident("attrs") {
                     out.attrs = Some(string(&meta)?);
                 } else if meta.path.is_ident("decode_only") {
@@ -1255,6 +1259,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     if let Some(tag) = &container.tag {
         header.push_str(&format!(" @tag({tag:?})"));
+    }
+
+    if container.gen_type {
+        header.push_str(" @genType");
     }
 
     if let Some(attrs) = &container.attrs {
