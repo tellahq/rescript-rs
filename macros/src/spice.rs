@@ -1247,12 +1247,12 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let codec = match &input.data {
         Data::Enum(_) if container.legacy_write => "@spice.serde({legacyWrite: true})",
         Data::Enum(_) if container.legacy => "@spice.serde({legacy: true})",
-        Data::Enum(_) => "@spice.serde",
-        _ => "@spice",
+        // A record or newtype encodes the same either way; `@spice.serde`
+        // keeps every generated type on serde's annotation.
+        _ => "@spice.serde",
     };
 
     header.push_str(&match container.only {
-        Some(only) if codec == "@spice" => only.to_string(),
         Some(only) => format!("{codec} {only}"),
         None => codec.to_string(),
     });

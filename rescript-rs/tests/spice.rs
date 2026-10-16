@@ -72,7 +72,7 @@ fn declarations() {
     assert_eq!(
         Module::new("Row").with::<Row>().render(),
         "// A stored row.
-@spice
+@spice.serde
 type t = {
   @spice.key(\"PK\")
   pk: string,
@@ -106,7 +106,7 @@ type t =
   | @as(\"red\") Red
   | @as(\"dark-blue\") Blue"
     );
-    assert_eq!(Words::declaration(), "@spice\ntype t = array<string>");
+    assert_eq!(Words::declaration(), "@spice.serde\ntype t = array<string>");
     assert_eq!(
         Module::new("Kind").with::<Kind>().render(),
         "@spice.serde\ntype kind =\n  | Story\n  | Scene\n"
@@ -208,7 +208,7 @@ type kind =
   | Scene
 
 module Row = {
-  @spice.decode
+  @spice.serde @spice.decode
   type t = {
     @spice.key(\"type\")
     type_: kind,
@@ -269,7 +269,7 @@ fn sixteen_value_tuples() {
     assert_eq!(wide.encode::<Plain>(), json);
     assert_eq!(
         Wide::declaration(),
-        "@spice\ntype t = {\n  values: array<(int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, string)>,\n}"
+        "@spice.serde\ntype t = {\n  values: array<(int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, string)>,\n}"
     );
     assert_eq!(
         decode::<Wide>(json!({"values": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]}))

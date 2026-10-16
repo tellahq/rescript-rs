@@ -188,7 +188,7 @@ type shape =
   | Circle({radius: float})
   | @spice.other Unknown
 
-@spice
+@spice.serde
 type color = {
   r: int,
   g: int,
