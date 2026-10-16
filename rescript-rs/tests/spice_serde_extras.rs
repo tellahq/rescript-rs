@@ -188,14 +188,14 @@ type shape =
   | Circle({radius: float})
   | @spice.other Unknown
 
-@spice
+@spice.serde
 type color = {
   r: int,
   g: int,
   b: int,
 }
 
-@spice.serde @spice.fallback(Solid(({r: 255, g: 255, b: 255}: color)))
+@spice.serde @spice.fallback(Solid({r: 255, g: 255, b: 255}))
 type background =
   | Solid(color)
   | Image(string)

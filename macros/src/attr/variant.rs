@@ -112,6 +112,11 @@ impl_parse! {
         "rename_all" => out.0.rename_all = Some(parse_assign_inflection(input)?),
         "skip" => out.0.skip = true,
         "untagged" => out.0.untagged = true,
+        // serde's own decoding details, which don't change the type.
+        "other" => {},
+        "alias" => {
+            parse_assign_str(input)?;
+        },
         // parse #[serde(borrow)] or `#[serde(borrow = "..")]` to not emit a warning
         "borrow" => {
             parse_optional_assign_str(input)?;

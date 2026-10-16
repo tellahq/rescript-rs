@@ -62,6 +62,8 @@ struct ContainerAttr {
     module: Option<String>,
     name: Option<String>,
     attrs: Option<String>,
+    /// `gen_type`: also export the type to TypeScript, `@genType`.
+    gen_type: bool,
     /// How field names become JSON keys (and ReScript field names).
     rename_fields: Option<RenameRule>,
     /// How variant names become their JSON names.
@@ -278,6 +280,8 @@ impl ContainerAttr {
                     out.module = Some(string(&meta)?);
                 } else if meta.path.is_ident("name") {
                     out.name = Some(string(&meta)?);
+                } else if meta.path.is_ident("gen_type") {
+                    out.gen_type = true;
                 } else if meta.path.is_ident("attrs") {
                     out.attrs = Some(string(&meta)?);
                 } else if meta.path.is_ident("decode_only") {
@@ -1243,18 +1247,22 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let codec = match &input.data {
         Data::Enum(_) if container.legacy_write => "@spice.serde({legacyWrite: true})",
         Data::Enum(_) if container.legacy => "@spice.serde({legacy: true})",
-        Data::Enum(_) => "@spice.serde",
-        _ => "@spice",
+        // A record or newtype encodes the same either way; `@spice.serde`
+        // keeps every generated type on serde's annotation.
+        _ => "@spice.serde",
     };
 
     header.push_str(&match container.only {
-        Some(only) if codec == "@spice" => only.to_string(),
         Some(only) => format!("{codec} {only}"),
         None => codec.to_string(),
     });
 
     if let Some(tag) = &container.tag {
         header.push_str(&format!(" @tag({tag:?})"));
+    }
+
+    if container.gen_type {
+        header.push_str(" @genType");
     }
 
     if let Some(attrs) = &container.attrs {
@@ -1373,13 +1381,20 @@ fn rescript_value(gen: &Gen, container: &ContainerAttr, data: &Data) -> Result<T
                 let fields = parse_fields(named, container.rename_fields)?;
                 let body = record(&fields, &|field| quote!(&self.#field));
 
+                // The first label qualified by the record's module, `{M.a: …}`,
+                // names the type: `rescript format` breaks `({…}: M.t)` in an
+                // attribute.
                 quote! {
                     let body = #body;
 
+                    if body.is_empty() {
+                        return ::std::option::Option::None;
+                    }
+
                     ::std::option::Option::Some(format!(
-                        "({{{}}}: {})",
+                        "{{{}{}}}",
+                        #spice::rescript_scope(&<Self as #spice::Spice>::rescript_type()),
                         body,
-                        <Self as #spice::Spice>::rescript_type(),
                     ))
                 }
             }
