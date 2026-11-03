@@ -20,6 +20,15 @@ pub struct Tint {
 }
 
 #[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, serde)]
+#[serde(rename_all = "camelCase")]
+pub struct Spring {
+    pub mass: f64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clamp: bool,
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
 #[rescript(codec, legacy_write, serde, tag = "type")]
 pub enum Accent {
     None,
@@ -102,4 +111,31 @@ fn f32_is_written_as_its_shortest_decimal() {
     assert_eq!(f32::decode::<Plain>(&json!(3)), Ok(3.));
     assert_eq!(0.1f32.rescript_value().as_deref(), Some("0.1"));
     assert_eq!(<Size<f32>>::rescript_type(), "size<float>");
+}
+
+#[test]
+fn skip_serializing_if_leaves_the_field_out_as_serde_does() {
+    assert_eq!(
+        serde_json::to_value(Spring {
+            mass: 1.,
+            clamp: false
+        })
+        .unwrap(),
+        json!({"mass": 1})
+    );
+    assert_eq!(
+        serde_json::to_value(Spring {
+            mass: 1.,
+            clamp: true
+        })
+        .unwrap(),
+        json!({"mass": 1, "clamp": true})
+    );
+    assert_eq!(
+        serde_json::from_value::<Spring>(json!({"mass": 1})).unwrap(),
+        Spring {
+            mass: 1.,
+            clamp: false
+        }
+    );
 }

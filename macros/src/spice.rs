@@ -101,6 +101,9 @@ struct FieldAttr {
     serde_rename: Option<String>,
     /// `#[serde(default)]` (`None`) or `#[serde(default = "path")]`.
     serde_default: Option<Option<Path>>,
+    /// `#[serde(skip_serializing_if = "path")]`: left out of what Rust
+    /// writes when `path(&value)` holds.
+    skip_serializing_if: Option<Path>,
     key: Option<String>,
     default: Option<String>,
     rust_default: Option<Expr>,
@@ -342,6 +345,8 @@ impl FieldAttr {
                     syn::Meta::Path(_) => None,
                     meta => Some(syn::parse_str(&meta_string(meta)?)?),
                 });
+            } else if path.is_ident("skip_serializing_if") {
+                out.skip_serializing_if = Some(syn::parse_str(&meta_string(&meta)?)?);
             } else if path.is_ident("flatten") || path.is_ident("skip") {
                 return Err(Error::new(
                     meta.span(),
@@ -600,6 +605,14 @@ fn parse_fields(fields: &syn::FieldsNamed, rename: Option<RenameRule>) -> Result
                 return Err(Error::new(
                     field.span(),
                     format!("spice would read `{key}` from Object.prototype when it is missing"),
+                ));
+            }
+
+            if attr.skip_serializing_if.is_some() && attr.serde_default.is_none() {
+                return Err(Error::new(
+                    field.span(),
+                    "#[serde(skip_serializing_if)] needs #[serde(default)], so a reader gets the \
+                     field back",
                 ));
             }
 
@@ -1182,18 +1195,21 @@ impl Gen {
             let key = &field.key;
             let value = access(&field.ident);
 
-            if let Some(with) = &field.attr.with {
-                return quote!((::std::string::String::from(#key), ::std::option::Option::Some(#with::encode::<H>(#value))));
-            }
+            let encoded = match (&field.attr.with, option_inner(&field.ty)) {
+                (Some(with), _) => quote!(::std::option::Option::Some(#with::encode::<H>(#value))),
+                (None, Some(_)) => quote!((#value).as_ref().map(|v| #spice::Spice::encode::<H>(v))),
+                (None, None) => {
+                    quote!(::std::option::Option::Some(#spice::Spice::encode::<H>(#value)))
+                }
+            };
+            let encoded = match &field.attr.skip_serializing_if {
+                Some(skip) => quote! {
+                    if #skip(#value) { ::std::option::Option::None } else { #encoded }
+                },
+                None => encoded,
+            };
 
-            match option_inner(&field.ty) {
-                Some(_) => quote! {
-                    (::std::string::String::from(#key), (#value).as_ref().map(|v| #spice::Spice::encode::<H>(v)))
-                },
-                None => quote! {
-                    (::std::string::String::from(#key), ::std::option::Option::Some(#spice::Spice::encode::<H>(#value)))
-                },
-            }
+            quote!((::std::string::String::from(#key), #encoded))
         }));
 
         quote!(#spice::object([#(#entries),*]))
@@ -1212,6 +1228,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     check_tuples(&input.data)?;
 
     let generics = codec_generics(&gen, &container, &input.generics)?;
+
+    if container.module.is_some() {
+        reject_skipped_fields(&input.data)?;
+    }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let ident = &input.ident;
@@ -1383,6 +1403,31 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
         #serde
     })
+}
+
+/// ppx-spice writes every field, so a type with a ReScript declaration can't
+/// leave one out.
+fn reject_skipped_fields(data: &Data) -> Result<()> {
+    let fields: Vec<&syn::Field> = match data {
+        Data::Struct(data) => data.fields.iter().collect(),
+        Data::Enum(data) => data.variants.iter().flat_map(|v| v.fields.iter()).collect(),
+        Data::Union(_) => vec![],
+    };
+
+    for field in fields {
+        if FieldAttr::parse(&field.attrs)?
+            .skip_serializing_if
+            .is_some()
+        {
+            return Err(Error::new(
+                field.span(),
+                "#[serde(skip_serializing_if)] needs a codec without module: ppx-spice writes \
+                 every field",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// The generics of a codec: type parameters, each bound by `Spice`, on a
