@@ -1862,15 +1862,12 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
     }
 
     let unknown = match variants.iter().find(|v| v.other) {
-        // A unit variant: no arguments.
+        // A constructor added after this build, whatever its arguments, so
+        // a reader deployed before it keeps reading.
         Some(v) => {
             let constructor = &v.variant.ident;
 
-            quote! {{
-                #spice::variant::arity_of(#kind, &items, 0, json)?;
-
-                Ok(Self::#constructor)
-            }}
+            quote!(Ok(Self::#constructor))
         }
         None => quote!(Err(#spice::variant::unknown_of(#kind, &items))),
     };

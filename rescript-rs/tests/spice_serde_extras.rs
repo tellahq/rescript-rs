@@ -116,13 +116,23 @@ fn other_is_a_unit_variant() {
         Mixed::decode::<Plain>(&json!("Rect")).unwrap_err(),
         failure("", "Invalid variant constructor", json!("Rect"))
     );
+}
+
+/// A legacy array of a constructor added later decodes to `other`
+/// whatever it carries, so a reader deployed before it keeps reading.
+#[test]
+fn other_reads_any_legacy_array() {
     assert_eq!(decode(json!(["Zzz"])), Some(LegacyOther::UnknownLegacy));
     assert_eq!(
-        LegacyOther::decode::<Plain>(&json!(["Zzz", 1])).unwrap_err(),
+        decode(json!(["Zzz", {"a": 1}])),
+        Some(LegacyOther::UnknownLegacy)
+    );
+    assert_eq!(
+        LegacyOther::decode::<Plain>(&json!(["Known", 1])).unwrap_err(),
         failure(
             "",
             "Invalid number of arguments to variant constructor",
-            json!(["Zzz", 1])
+            json!(["Known", 1])
         )
     );
 }
