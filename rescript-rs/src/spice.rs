@@ -190,7 +190,11 @@ pub fn rescript_float(value: f64) -> Option<String> {
 
     let text = value.to_string();
 
-    Some(if text.contains(['.', 'e']) { text } else { format!("{text}.") })
+    Some(if text.contains(['.', 'e']) {
+        text
+    } else {
+        format!("{text}.")
+    })
 }
 
 /// The module part of a qualified ReScript type (`Module.t` gives
@@ -525,6 +529,39 @@ impl Spice for f64 {
 
     fn rescript_value(&self) -> Option<String> {
         rescript_float(*self)
+    }
+}
+
+/// A JavaScript number read as the nearest `f32`, written as the shortest
+/// decimal that reads back as it (`0.1`, not `0.10000000149011612`), as
+/// serde_json writes an `f32`.
+impl Spice for f32 {
+    fn rescript_type() -> String {
+        "float".into()
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![0.0, 0.1, -2.5]
+    }
+
+    fn decode<H: Host>(json: &Value) -> Result<Self> {
+        f64::decode::<H>(json).map(|n| n as f32)
+    }
+
+    fn encode<H: Host>(&self) -> Value {
+        H::number(shortest(*self))
+    }
+
+    fn rescript_value(&self) -> Option<String> {
+        rescript_float(shortest(*self))
+    }
+}
+
+/// The `f64` the shortest decimal form of `value` reads as.
+fn shortest(value: f32) -> f64 {
+    match value.is_finite() {
+        true => value.to_string().parse().unwrap_or(f64::from(value)),
+        false => f64::from(value),
     }
 }
 
@@ -1259,5 +1296,32 @@ pub mod serde {
             std::iter::once((tag.to_owned(), Some(Value::String(name.to_owned()))))
                 .chain(map.into_iter().map(|(key, value)| (key, Some(value)))),
         )
+    }
+}
+
+/// serde's `Serialize` and `Deserialize` through a type's codec, which
+/// `#[rescript(codec, serde)]` implements them with: serde reads and writes
+/// the JSON ppx-spice does.
+pub mod serde_impl {
+    pub use ::serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{Failure, Plain, Spice, Value};
+
+    pub fn serialize<T: Spice, S: Serializer>(value: &T, serializer: S) -> Result<S::Ok, S::Error> {
+        value.encode::<Plain>().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T: Spice, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<T, D::Error> {
+        let json = Value::deserialize(deserializer)?;
+
+        T::decode::<Plain>(&json).map_err(|failure| match failure {
+            Failure::Decode(error) if error.path.is_empty() => D::Error::custom(error.message),
+            Failure::Decode(error) => {
+                D::Error::custom(format!("{} at `{}`", error.message, error.path))
+            }
+            Failure::Throw(message) => D::Error::custom(message),
+        })
     }
 }

@@ -6,7 +6,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
     ext::IdentExt, spanned::Spanned, Attribute, Data, DeriveInput, Error, Expr, Fields,
-    GenericArgument, Ident, LitStr, Path, PathArguments, Result, Type,
+    GenericArgument, GenericParam, Generics, Ident, LitStr, Path, PathArguments, Result, Type,
 };
 
 const RESCRIPT_KEYWORDS: &[&str] = &[
@@ -89,6 +89,9 @@ struct ContainerAttr {
     /// `#[rescript(fallback = "path")]`: what anything the decoder rejects
     /// decodes to, `@spice.fallback(…)`.
     fallback: Option<Path>,
+    /// `serde`: also implement serde's `Serialize` and `Deserialize` with
+    /// the codec.
+    serde: bool,
 }
 
 #[derive(Default)]
@@ -311,6 +314,8 @@ impl ContainerAttr {
                     out.krate = Some(meta.value()?.parse::<LitStr>()?.parse()?);
                 } else if meta.path.is_ident("fallback") {
                     out.fallback = Some(meta.value()?.parse::<LitStr>()?.parse()?);
+                } else if meta.path.is_ident("serde") {
+                    out.serde = true;
                 } else {
                     return Err(meta.error("unknown rescript attribute with codec"));
                 }
@@ -1206,12 +1211,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     check_tuples(&input.data)?;
 
-    if !input.generics.params.is_empty() {
-        return Err(Error::new(
-            input.generics.span(),
-            "Spice types cannot be generic yet",
-        ));
-    }
+    let generics = codec_generics(&gen, &container, &input.generics)?;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let ident = &input.ident;
     let name = container
@@ -1221,6 +1222,17 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let qualified = match &container.module {
         Some(module) => format!("{module}.{name}"),
         None => name.clone(),
+    };
+    let params: Vec<&Ident> = generics.type_params().map(|param| &param.ident).collect();
+    let rescript_type = match params.as_slice() {
+        [] => quote!(::std::string::String::from(#qualified)),
+        params => quote! {
+            format!(
+                "{}<{}>",
+                #qualified,
+                [#(<#params as #spice::Spice>::rescript_type()),*].join(", "),
+            )
+        },
     };
 
     let samples = samples(&gen, &input.data)?;
@@ -1313,11 +1325,40 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
     });
 
+    let serde = container.serde.then(|| {
+        let mut de_generics = generics.clone();
+
+        de_generics.params.insert(0, syn::parse_quote!('de));
+
+        let (de_impl_generics, _, _) = de_generics.split_for_impl();
+
+        quote! {
+            #[automatically_derived]
+            impl #impl_generics #spice::serde_impl::Serialize for #ident #ty_generics #where_clause {
+                fn serialize<S: #spice::serde_impl::Serializer>(
+                    &self,
+                    serializer: S,
+                ) -> ::std::result::Result<S::Ok, S::Error> {
+                    #spice::serde_impl::serialize(self, serializer)
+                }
+            }
+
+            #[automatically_derived]
+            impl #de_impl_generics #spice::serde_impl::Deserialize<'de> for #ident #ty_generics #where_clause {
+                fn deserialize<D: #spice::serde_impl::Deserializer<'de>>(
+                    deserializer: D,
+                ) -> ::std::result::Result<Self, D::Error> {
+                    #spice::serde_impl::deserialize(deserializer)
+                }
+            }
+        }
+    });
+
     Ok(quote! {
         #[automatically_derived]
-        impl #spice::Spice for #ident {
+        impl #impl_generics #spice::Spice for #ident #ty_generics #where_clause {
             fn rescript_type() -> ::std::string::String {
-                ::std::string::String::from(#qualified)
+                #rescript_type
             }
 
             fn samples() -> ::std::vec::Vec<Self> {
@@ -1339,7 +1380,40 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
 
         #declare
+
+        #serde
     })
+}
+
+/// The generics of a codec: type parameters, each bound by `Spice`, on a
+/// type that declares no ReScript (a declaration would need ReScript type
+/// parameters).
+fn codec_generics(gen: &Gen, container: &ContainerAttr, generics: &Generics) -> Result<Generics> {
+    let spice = gen.spice();
+    let mut generics = generics.clone();
+
+    for param in &mut generics.params {
+        match param {
+            GenericParam::Type(param) if container.module.is_none() => {
+                param.bounds.push(syn::parse_quote!(#spice::Spice));
+                param.bounds.push(syn::parse_quote!('static));
+            }
+            GenericParam::Type(param) => {
+                return Err(Error::new(
+                    param.span(),
+                    "A codec with a module can't have type parameters yet",
+                ))
+            }
+            param => {
+                return Err(Error::new(
+                    param.span(),
+                    "A codec can only have type parameters",
+                ))
+            }
+        }
+    }
+
+    Ok(generics)
 }
 
 /// `Spice::rescript_value`: the value as a ReScript literal.

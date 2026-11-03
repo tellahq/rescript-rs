@@ -30,7 +30,7 @@ heapless-impl = ["heapless"]
 semver-impl = ["semver"]
 smol_str-impl = ["smol_str"]
 serde-json-impl = ["serde_json"]
-spice = ["serde_json"]
+spice = ["serde_json", "serde"]
 no-serde-warnings = ["rescript-rs-macros/no-serde-warnings"]
 tokio-impl = ["tokio"]
 jiff-impl = ["jiff"]
@@ -58,6 +58,7 @@ smol_str = { version = "0.3", optional = true }
 indexmap = { version = "2", optional = true }
 ordered-float = { version = ">= 3, < 6", optional = true }
 serde_json = { version = "1", optional = true }
+serde = { version = "1", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 jiff = { version = "0.2", optional = true }
 arrayvec = { version = ">= 0.6, < 0.8", optional = true }
