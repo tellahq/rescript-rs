@@ -1227,7 +1227,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     check_tuples(&input.data)?;
 
-    let generics = codec_generics(&gen, &container, &input.generics)?;
+    let generics = codec_generics(&gen, &input.generics)?;
 
     if container.module.is_some() {
         reject_skipped_fields(&input.data)?;
@@ -1308,7 +1308,18 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         ""
     };
 
-    let type_line = format!("\ntype {rec}{name} =");
+    let type_vars = match params.as_slice() {
+        [] => String::new(),
+        params => format!(
+            "<{}>",
+            params
+                .iter()
+                .map(|param| type_var(param))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let type_line = format!("\ntype {rec}{name}{type_vars} =");
 
     // `@spice.fallback(…)` with the fallback value as a ReScript literal.
     let fallback_attr = match &container.fallback {
@@ -1331,14 +1342,18 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         None => decode,
     };
     let declare = container.module.as_ref().map(|module| {
+        let (placeholders, body) = declared_body(&gen, &container, &input, &params, body);
+
         quote! {
             #[automatically_derived]
-            impl #spice::Declare for #ident {
+            impl #impl_generics #spice::Declare for #ident #ty_generics #where_clause {
                 fn module() -> &'static str {
                     #module
                 }
 
                 fn declaration() -> ::std::string::String {
+                    #placeholders
+
                     format!("{}{}{}{}", #header, #fallback_attr, #type_line, #body)
                 }
             }
@@ -1430,24 +1445,16 @@ fn reject_skipped_fields(data: &Data) -> Result<()> {
     Ok(())
 }
 
-/// The generics of a codec: type parameters, each bound by `Spice`, on a
-/// type that declares no ReScript (a declaration would need ReScript type
-/// parameters).
-fn codec_generics(gen: &Gen, container: &ContainerAttr, generics: &Generics) -> Result<Generics> {
+/// The generics of a codec: type parameters, each bound by `Spice`.
+fn codec_generics(gen: &Gen, generics: &Generics) -> Result<Generics> {
     let spice = gen.spice();
     let mut generics = generics.clone();
 
     for param in &mut generics.params {
         match param {
-            GenericParam::Type(param) if container.module.is_none() => {
+            GenericParam::Type(param) => {
                 param.bounds.push(syn::parse_quote!(#spice::Spice));
                 param.bounds.push(syn::parse_quote!('static));
-            }
-            GenericParam::Type(param) => {
-                return Err(Error::new(
-                    param.span(),
-                    "A codec with a module can't have type parameters yet",
-                ))
             }
             param => {
                 return Err(Error::new(
@@ -1459,6 +1466,98 @@ fn codec_generics(gen: &Gen, container: &ContainerAttr, generics: &Generics) -> 
     }
 
     Ok(generics)
+}
+
+/// A type parameter's ReScript type variable: `T` is `'t`.
+fn type_var(param: &Ident) -> String {
+    format!("'{}", lower_first(&param.unraw().to_string()))
+}
+
+/// The declaration's body, `Derived::0`, for a type with type parameters:
+/// derived again with each parameter replaced by a local type whose ReScript
+/// type is its type variable, so `width: T` declares `width: 't`. The local
+/// types come first, as statements of `Declare::declaration`.
+fn declared_body(
+    gen: &Gen,
+    container: &ContainerAttr,
+    input: &DeriveInput,
+    params: &[&Ident],
+    body: TokenStream,
+) -> (TokenStream, TokenStream) {
+    use syn::visit_mut::VisitMut;
+
+    struct Substitute<'a>(&'a [(Ident, Ident)]);
+
+    impl VisitMut for Substitute<'_> {
+        fn visit_type_mut(&mut self, ty: &mut Type) {
+            if let Type::Path(path) = ty {
+                if path.qself.is_none() {
+                    if let Some((_, placeholder)) =
+                        self.0.iter().find(|(param, _)| path.path.is_ident(param))
+                    {
+                        *ty = syn::parse_quote!(#placeholder);
+
+                        return;
+                    }
+                }
+            }
+
+            syn::visit_mut::visit_type_mut(self, ty);
+        }
+    }
+
+    if params.is_empty() {
+        return (quote!(), body);
+    }
+
+    let spice = gen.spice();
+    let pairs: Vec<(Ident, Ident)> = params
+        .iter()
+        .map(|param| {
+            (
+                (*param).clone(),
+                format_ident!("__RescriptTypeVar{}", param),
+            )
+        })
+        .collect();
+    let placeholders = pairs.iter().map(|(param, placeholder)| {
+        let var = type_var(param);
+
+        quote! {
+            #[derive(Clone)]
+            struct #placeholder;
+
+            impl #spice::Spice for #placeholder {
+                fn rescript_type() -> ::std::string::String {
+                    ::std::string::String::from(#var)
+                }
+
+                fn decode<H: #spice::Host>(_: &#spice::Value) -> #spice::Result<Self> {
+                    unreachable!("a type variable is only declared")
+                }
+
+                fn encode<H: #spice::Host>(&self) -> #spice::Value {
+                    unreachable!("a type variable is only declared")
+                }
+            }
+        }
+    });
+    let mut data = input.data.clone();
+
+    match &mut data {
+        Data::Struct(data) => Substitute(&pairs).visit_data_struct_mut(data),
+        Data::Enum(data) => Substitute(&pairs).visit_data_enum_mut(data),
+        Data::Union(_) => {}
+    }
+
+    let derived = match &data {
+        Data::Struct(data) => derive_struct(gen, container, data, &input.ident),
+        Data::Enum(data) => derive_enum(gen, container, data),
+        Data::Union(_) => unreachable!("rejected"),
+    };
+    let body = derived.map_or(body, |(body, _, _)| body);
+
+    (quote!(#(#placeholders)*), body)
 }
 
 /// `Spice::rescript_value`: the value as a ReScript literal.

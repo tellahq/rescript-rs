@@ -113,8 +113,9 @@ constructors with the same JSON name, several values or a field keyed like the t
 Container attributes: `codec`, `module`, `name`, `attrs` (extra ReScript attributes, e.g. `@genType`), `tag`,
 `legacy`, `legacy_write`, `poly` (a polymorphic variant, `[#A | #B]`), `decode_only`, `encode_only`, `rename_all = "camelCase"`.
 `serde` also implements serde's `Serialize` and `Deserialize` with the codec, so a codec type can be a field of a type
-serde derives and serde reads and writes the JSON ppx-spice does. A codec without `module` (no ReScript declaration) can
-have type parameters, each bound by `Spice`. `f32` reads as the nearest `f32` and writes its shortest decimal (`0.1`).
+serde derives and serde reads and writes the JSON ppx-spice does. A codec can have type parameters, each bound by `Spice`;
+its declaration has a type variable for each (`struct Size<T>` declares `type t<'t> = {width: 't, …}`) and
+`Size<f64>` is `Size.t<float>` in the types that use it. `f32` reads as the nearest `f32` and writes its shortest decimal (`0.1`).
 Field attributes: `name` (the ReScript field), `key` (`@spice.key`), `default` (`@spice.default`, a ReScript
 expression; simple literals and constructors are translated, otherwise add `rust_default`), `optional` (`field?:`),
 `codec` + `with` (`@spice.codec` and the Rust module with `decode`/`encode`/`samples`). Variant attribute: `rename`

@@ -55,6 +55,32 @@ enum Color {
 #[rescript(codec, module = "Words", name = "t")]
 struct Words(Vec<String>);
 
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Size", name = "t")]
+struct Size<T> {
+    width: T,
+    height: T,
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Slot")]
+enum Slot<Item, Key> {
+    Empty,
+    Filled(Item),
+    Keyed {
+        key: Key,
+        items: Vec<Item>,
+        best: Option<Size<Item>>,
+    },
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Frame", name = "t")]
+struct Frame {
+    size: Size<f64>,
+    slot: Slot<i32, String>,
+}
+
 fn decode<T: Spice>(json: Value) -> Result<T, Failure> {
     T::decode::<Plain>(&json)
 }
@@ -275,5 +301,49 @@ fn sixteen_value_tuples() {
         decode::<Wide>(json!({"values": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]}))
             .err(),
         Some(error(".values[0][15]", "Not a string", json!(15)))
+    );
+}
+
+#[test]
+fn type_parameters() {
+    assert_eq!(
+        Size::<f64>::declaration(),
+        "@spice.serde\ntype t<'t> = {\n  width: 't,\n  height: 't,\n}"
+    );
+    assert_eq!(
+        Slot::<f64, String>::declaration(),
+        "@spice.serde
+type slot<'item, 'key> =
+  | Empty
+  | Filled('item)
+  | Keyed({key: 'key, items: array<'item>, best: option<Size.t<'item>>})"
+    );
+    assert_eq!(
+        Frame::declaration(),
+        "@spice.serde\ntype t = {\n  size: Size.t<float>,\n  slot: Slot.slot<int, string>,\n}"
+    );
+    assert_eq!(
+        decode::<Frame>(json!({
+            "size": {"width": 1.5, "height": 2},
+            "slot": {"Keyed": {"key": "a", "items": [1], "best": {"width": 3, "height": 4}}},
+        })),
+        Ok(Frame {
+            size: Size {
+                width: 1.5,
+                height: 2.
+            },
+            slot: Slot::Keyed {
+                key: "a".into(),
+                items: vec![1],
+                best: Some(Size {
+                    width: 3,
+                    height: 4
+                }),
+            },
+        })
+    );
+    assert_eq!(
+        decode::<Size<i32>>(json!({"width": 1.5, "height": 2})),
+        Err(error(".width", "Not an integer", json!(1.5)))
     );
 }
