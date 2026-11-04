@@ -1179,6 +1179,36 @@ pub mod variant {
 ///     a: Vec<(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>,
 /// }
 /// ```
+///
+/// A declared type's field of a type parameter's type has no default: its
+/// ReScript type is a type variable.
+///
+/// ```compile_fail
+/// #[derive(rescript_rs::ReScript, Clone)]
+/// #[rescript(codec, module = "M")]
+/// struct S<T: Default> {
+///     #[serde(default)]
+///     a: T,
+/// }
+/// ```
+///
+/// A declared type doesn't use a type parameter's associated type, which
+/// ReScript has no counterpart of.
+///
+/// ```compile_fail
+/// trait Has {
+///     type X;
+/// }
+///
+/// #[derive(rescript_rs::ReScript, Clone)]
+/// #[rescript(codec, module = "M")]
+/// struct S<T: Has>
+/// where
+///     T::X: rescript_rs::spice::Spice,
+/// {
+///     a: T::X,
+/// }
+/// ```
 pub mod serde {
     use super::*;
 

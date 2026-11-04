@@ -75,6 +75,26 @@ enum Slot<Item, Key> {
 }
 
 #[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Keyed", name = "t")]
+struct Keyed<Type, Value> {
+    #[serde(default)]
+    kinds: Vec<Type>,
+    #[serde(default)]
+    value: Option<Value>,
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Fallible", fallback = "fallen")]
+enum Fallible<T> {
+    Fallen,
+    Held(T),
+}
+
+fn fallen<T>() -> Fallible<T> {
+    Fallible::Fallen
+}
+
+#[derive(ReScript, Debug, Clone, PartialEq)]
 #[rescript(codec, module = "Frame", name = "t")]
 struct Frame {
     size: Size<f64>,
@@ -306,6 +326,27 @@ fn sixteen_value_tuples() {
 
 #[test]
 fn type_parameters() {
+    assert_eq!(
+        Keyed::<i32, String>::declaration(),
+        "@spice.serde
+type t<'type_, 'value> = {
+  @spice.default([])
+  kinds: array<'type_>,
+  @spice.default(None)
+  value: option<'value>,
+}"
+    );
+    assert_eq!(
+        Fallible::<String>::declaration(),
+        "@spice.serde @spice.fallback(Fallible.Fallen)
+type fallible<'t> =
+  | Fallen
+  | Held('t)"
+    );
+    assert_eq!(
+        decode::<Fallible<i32>>(json!({"Held": "x"})),
+        Ok(Fallible::Fallen)
+    );
     assert_eq!(
         Size::<f64>::declaration(),
         "@spice.serde\ntype t<'t> = {\n  width: 't,\n  height: 't,\n}"
