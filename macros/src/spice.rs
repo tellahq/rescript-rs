@@ -1231,6 +1231,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     if container.module.is_some() {
         reject_skipped_fields(&input.data)?;
+        check_declared_params(&input.data, &generics)?;
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -1328,7 +1329,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
             quote!(format!(
                 " @spice.fallback({})",
-                #spice::Spice::rescript_value(&#path()).expect(#message),
+                #spice::Spice::rescript_value(&{ let value: Self = #path(); value }).expect(#message),
             ))
         }
         None => quote!(::std::string::String::new()),
@@ -1469,8 +1470,90 @@ fn codec_generics(gen: &Gen, generics: &Generics) -> Result<Generics> {
 }
 
 /// A type parameter's ReScript type variable: `T` is `'t`.
+/// A keyword gets a `_`, as a field does: `Type` is `'type_`.
 fn type_var(param: &Ident) -> String {
-    format!("'{}", lower_first(&param.unraw().to_string()))
+    let name = lower_first(&param.unraw().to_string());
+
+    match RESCRIPT_KEYWORDS.contains(&name.as_str()) {
+        true => format!("'{name}_"),
+        false => format!("'{name}"),
+    }
+}
+
+/// What a declared type can't do with its type parameters, since the
+/// declaration has only type variables: use an associated type (`T::X`,
+/// `<T as Trait>::X`), which ReScript has no counterpart of, or give a field
+/// of a type parameter's type a default, which has no ReScript value.
+fn check_declared_params(data: &Data, generics: &Generics) -> Result<()> {
+    use syn::visit::Visit;
+
+    struct Associated<'a> {
+        params: &'a [&'a Ident],
+        found: Option<Span>,
+    }
+
+    impl<'ast> Visit<'ast> for Associated<'_> {
+        fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+            let is_param = |ty: &Type| matches!(ty, Type::Path(p) if self.params.iter().any(|param| p.path.is_ident(*param)));
+            let through_param = match &ty.qself {
+                Some(qself) => is_param(&qself.ty),
+                None => {
+                    ty.path.segments.len() > 1
+                        && self
+                            .params
+                            .iter()
+                            .any(|param| ty.path.segments[0].ident == **param)
+                }
+            };
+
+            if through_param && self.found.is_none() {
+                self.found = Some(ty.span());
+            }
+
+            syn::visit::visit_type_path(self, ty);
+        }
+    }
+
+    let params: Vec<&Ident> = generics.type_params().map(|param| &param.ident).collect();
+
+    if params.is_empty() {
+        return Ok(());
+    }
+
+    let fields: Vec<&syn::Field> = match data {
+        Data::Struct(data) => data.fields.iter().collect(),
+        Data::Enum(data) => data.variants.iter().flat_map(|v| v.fields.iter()).collect(),
+        Data::Union(_) => vec![],
+    };
+
+    for field in fields {
+        let mut associated = Associated {
+            params: &params,
+            found: None,
+        };
+
+        associated.visit_type(&field.ty);
+
+        if let Some(span) = associated.found {
+            return Err(Error::new(
+                span,
+                "A declared codec can't use a type parameter's associated type: ReScript has none",
+            ));
+        }
+
+        let attr = FieldAttr::parse(&field.attrs)?;
+        let bare = matches!(&field.ty, Type::Path(p) if p.qself.is_none() && params.iter().any(|param| p.path.is_ident(*param)));
+
+        if bare && (attr.serde_default.is_some() || attr.default.is_some()) {
+            return Err(Error::new(
+                field.span(),
+                "A field of a type parameter's type can't have a default: its ReScript type is a type \
+                 variable",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// The declaration's body, `Derived::0`, for a type with type parameters:
@@ -1524,7 +1607,7 @@ fn declared_body(
         let var = type_var(param);
 
         quote! {
-            #[derive(Clone)]
+            #[derive(Clone, Default)]
             struct #placeholder;
 
             impl #spice::Spice for #placeholder {
