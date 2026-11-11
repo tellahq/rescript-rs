@@ -117,6 +117,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(feature = "spice")]
+pub use rescript_rs_macros::wasm;
 pub use rescript_rs_macros::ReScript;
 pub use rescript_rs_macros::ReScript as TS;
 
@@ -133,6 +135,30 @@ mod serde_json;
 pub mod spice;
 #[cfg(feature = "tokio-impl")]
 mod tokio;
+#[cfg(feature = "wasm-bindgen")]
+pub mod wasm;
+
+/// The wasm-bindgen export `#[rescript_rs::wasm]` adds to a function:
+/// nothing without the `wasm-bindgen` feature.
+#[cfg(feature = "wasm-bindgen")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! wasm_shim {
+    ($js_name:literal $($item:tt)*) => {
+        #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
+            js_name = $js_name,
+            wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
+        )]
+        $($item)*
+    };
+}
+
+#[cfg(not(feature = "wasm-bindgen"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! wasm_shim {
+    ($($item:tt)*) => {};
+}
 
 /// A type which can be represented in ReScript.
 /// Most of the time, you'd want to derive this trait instead of implementing it manually.

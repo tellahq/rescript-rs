@@ -257,6 +257,88 @@ pub struct Module<H: Host = Plain> {
 enum Item<H: Host> {
     Declaration(String, Codec),
     Module(Module<H>),
+    Function(String),
+}
+
+/// A Rust function ReScript calls through wasm-bindgen, as
+/// `#[rescript_rs::wasm]` describes it (`<function>_rescript()`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Function {
+    /// The ReScript value.
+    pub name: &'static str,
+    /// The wasm-bindgen export.
+    pub js_name: &'static str,
+    /// The function's doc comment, one entry per line.
+    pub docs: &'static [&'static str],
+    /// The ReScript type of each parameter, in order.
+    pub args: Vec<String>,
+    /// The ReScript type of what it returns.
+    pub output: String,
+}
+
+impl Function {
+    /// The binding: a module holding one `@spice` alias per parameter and
+    /// for the output (so ppx-spice generates their codecs), the export
+    /// itself and `call`, then the function under its own name. Every line
+    /// is laid out as `rescript format` leaves it.
+    fn render(&self, js_module: &str, depth: usize) -> String {
+        let module = {
+            let mut name = self.name.to_owned();
+
+            name[..1].make_ascii_uppercase();
+            name
+        };
+        let args: Vec<String> = (0..self.args.len()).map(|i| format!("arg{i}")).collect();
+        let alias = |name: &str, ty: &str| {
+            let declaration = format(&format!("@spice\ntype {name} = {ty}"), depth + 1);
+
+            declaration
+                .lines()
+                .map(|line| format!("  {line}\n"))
+                .collect::<String>()
+        };
+        let mut out: String = self
+            .docs
+            .iter()
+            .map(|line| format!("// {line}\n"))
+            .collect();
+
+        out.push_str(&format!("module {module} = {{\n"));
+
+        for (name, ty) in args.iter().zip(&self.args) {
+            out.push_str(&alias(name, ty));
+        }
+
+        out.push_str(&alias("output", &self.output));
+        out.push_str(&format!(
+            "\n  @module({}) @variadic\n  external wasm: array<JSON.t> => JSON.t = {}\n\n",
+            rescript_string(js_module),
+            rescript_string(self.js_name),
+        ));
+
+        if args.is_empty() {
+            out.push_str("  let call = () => wasm([])->output_decode\n");
+        } else {
+            let parameters = match args.as_slice() {
+                [only] => only.clone(),
+                _ => format!("({})", args.join(", ")),
+            };
+
+            out.push_str(&format!("  let call = {parameters} => {{\n"));
+
+            for arg in &args {
+                out.push_str(&format!("    let {arg} = {arg}->{arg}_encode\n"));
+            }
+
+            out.push_str(&format!(
+                "\n    wasm([{}])->output_decode\n  }}\n",
+                args.join(", ")
+            ));
+        }
+
+        out.push_str(&format!("}}\nlet {} = {module}.call\n", self.name));
+        out
+    }
 }
 
 /// A type's `encode(decode(json))`, for testing a type's Rust codec
@@ -325,6 +407,19 @@ impl<H: Host> Module<H> {
         self
     }
 
+    /// A function exported from the wasm-bindgen module at `js_module`
+    /// (as the generated file imports it, e.g. `./wasm/app.js`), called as
+    /// `name(arg, …)`: it encodes its arguments, calls the export and
+    /// decodes what comes back, a `result<output, Spice.decodeError>`. See
+    /// `rescript_rs::wasm`.
+    pub fn function(mut self, js_module: &str, function: Function) -> Self {
+        let depth = self.name.matches('.').count();
+
+        self.items
+            .push(Item::Function(function.render(js_module, depth)));
+        self
+    }
+
     /// `module Child = { … }`, for a module named `Parent.Child`.
     pub fn nested(mut self, module: Module<H>) -> Self {
         assert_eq!(
@@ -350,6 +445,7 @@ impl<H: Host> Module<H> {
             .flat_map(|item| match item {
                 Item::Declaration(_, codec) => vec![codec.clone()],
                 Item::Module(module) => module.codecs(),
+                Item::Function(_) => vec![],
             })
             .collect()
     }
@@ -377,6 +473,7 @@ impl<H: Host> Module<H> {
                     out.push_str(&format(&unqualify_all(text, self.name, root), depth));
                     out.push('\n');
                 }
+                Item::Function(text) => out.push_str(&unqualify_all(text, self.name, root)),
                 Item::Module(module) => {
                     let child = module.name.rsplit_once('.').map_or(module.name, |(_, c)| c);
                     let body = module.body(root);

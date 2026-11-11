@@ -19,6 +19,7 @@ mod deps;
 mod optional;
 mod spice;
 mod types;
+mod wasm;
 
 struct DerivedTS {
     crate_rename: Path,
@@ -492,6 +493,28 @@ pub fn rescript(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         Ok(result) => result,
     }
     .into()
+}
+
+/// Lets ReScript call a Rust function through wasm-bindgen with the
+/// function's own parameter and return types on both sides: every
+/// parameter and the return type is a `rescript_rs::spice::Spice`.
+///
+/// The function stays as written. Beside it the attribute adds a
+/// wasm-bindgen export (when rescript-rs's `wasm-bindgen` feature is on)
+/// that decodes the arguments and encodes the result, and
+/// `<function>_rescript()`, which `rescript_rs::spice::Module::function`
+/// renders as the typed ReScript binding. See `rescript_rs::wasm`.
+///
+/// `name` is the ReScript value (the function's name in camelCase by
+/// default), `js_name` the wasm-bindgen export (`name` by default).
+#[proc_macro_attribute]
+pub fn wasm(
+    args: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    wasm::attribute(args.into(), item.into())
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
 }
 
 fn entry(input: proc_macro::TokenStream) -> Result<TokenStream> {
