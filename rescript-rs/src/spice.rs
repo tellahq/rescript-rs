@@ -262,7 +262,23 @@ enum Item<H: Host> {
 
 /// A native serde type whose ReScript runtime layout is known to the generator.
 /// Implemented by `#[rescript(codec, wasm)]` alongside ordinary serde derives.
+///
+/// A present JSON null must not silently become an absent optional field:
+/// ```compile_fail
+/// use rescript_rs::{ReScript, spice::Wasm};
+/// #[derive(Clone, serde::Serialize, serde::Deserialize, ReScript)]
+/// #[rescript(codec, wasm)]
+/// struct Invalid {
+///     #[rescript(optional)]
+///     #[serde(skip_serializing_if = "Option::is_none")]
+///     value: Option<serde_json::Value>,
+/// }
+/// let _ = Invalid::input_identity();
+/// ```
 pub trait Wasm: Spice + 'static + ::serde::Serialize + ::serde::de::DeserializeOwned {
+    /// Whether a present value can itself serialize as null. Such a value
+    /// cannot be an optional field: serde would read it back as None.
+    const NULLABLE: bool = false;
     fn input_identity() -> bool {
         false
     }
@@ -292,8 +308,19 @@ macro_rules! wasm_scalar {
         }
     )*};
 }
-wasm_scalar!(String, bool, i32, f64, Value);
-impl Wasm for () {}
+wasm_scalar!(String, bool, i32, f64);
+impl Wasm for Value {
+    const NULLABLE: bool = true;
+    fn input_identity() -> bool {
+        true
+    }
+    fn output_identity() -> bool {
+        true
+    }
+}
+impl Wasm for () {
+    const NULLABLE: bool = true;
+}
 impl<T: Wasm> Wasm for Vec<T> {
     fn input_identity() -> bool {
         T::input_identity()
@@ -302,8 +329,11 @@ impl<T: Wasm> Wasm for Vec<T> {
         T::output_identity()
     }
 }
-impl<T: Wasm> Wasm for Option<T> {}
+impl<T: Wasm> Wasm for Option<T> {
+    const NULLABLE: bool = true;
+}
 impl<T: Wasm> Wasm for Box<T> {
+    const NULLABLE: bool = T::NULLABLE;
     fn input_identity() -> bool {
         T::input_identity()
     }

@@ -154,7 +154,9 @@ copying, and no redundant validation of trusted same-build Rust output.
 Eligibility is recursive through records, arrays, boxes and tagged variants.
 Optional record fields need `#[rescript(optional)]` and
 `#[serde(skip_serializing_if = "Option::is_none")]`; omitted keys are valid
-ReScript optional fields. Standalone options, unit values and recursive layouts
+ReScript optional fields. Optional fields whose values can themselves be null
+(JSON, unit or another option) are rejected: native serde would lose the
+difference between a present null and an absent field. Standalone options, unit values and recursive layouts
 retain JS codecs where representations differ, but still use native serde in
 Rust. Unknown/custom serde attributes are rejected rather than guessing.
 `#[rescript(serde)]` is the legacy Spice-to-serde adapter and cannot be combined

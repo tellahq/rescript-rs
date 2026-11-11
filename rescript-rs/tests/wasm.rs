@@ -1,9 +1,9 @@
 #![cfg(feature = "spice")]
 
 #[path = "wasm/fixture.rs"]
-mod fixture;
+pub mod fixture;
 use fixture::*;
-use rescript_rs::spice::{Module, Value};
+use rescript_rs::spice::Module;
 
 /// Binding layouts are inferred from the same types as the exports.
 #[test]
@@ -69,7 +69,7 @@ fn export_wasm_binding() {
 #[cfg(all(target_arch = "wasm32", feature = "wasm-bindgen"))]
 mod exports {
     use js_sys::{Array, Object, Reflect, JSON};
-    use rescript_rs::wasm::JsValue;
+    use rescript_rs::{spice::Value, wasm::JsValue};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;

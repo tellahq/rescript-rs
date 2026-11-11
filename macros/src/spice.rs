@@ -2358,6 +2358,7 @@ fn derive_wasm(
         }
     }
     let mut types = vec![];
+    let mut optional_types = vec![];
     let fields: Vec<&syn::Fields> = match &input.data {
         Data::Struct(data) => vec![&data.fields],
         Data::Enum(data) => {
@@ -2444,6 +2445,7 @@ fn derive_wasm(
                 if !field.attr.optional || !skips_none {
                     return Err(Error::new(field.ident.span(), "wasm option fields need #[rescript(optional)] and #[serde(skip_serializing_if = \"Option::is_none\")]"));
                 }
+                optional_types.push(inner.clone());
                 types.push(inner.clone());
             } else {
                 if field.attr.skip_serializing_if.is_some() {
@@ -2456,13 +2458,14 @@ fn derive_wasm(
             }
         }
     }
+    let guard = quote!(const { #(assert!(!<#optional_types as #spice::Wasm>::NULLABLE, "an optional WASM field cannot contain a nullable value; use the codec bridge");)* });
     let input_identity = quote!(true #(&& <#types as #spice::Wasm>::input_identity())*);
     let output_identity = quote!(true #(&& <#types as #spice::Wasm>::output_identity())*);
 
     Ok(quote! {
         impl #impl_generics #spice::Wasm for #ident #ty_generics #where_clause {
-            fn input_identity() -> bool { #spice::identity_once::<Self>(|| #input_identity) }
-            fn output_identity() -> bool { #spice::identity_once::<Self>(|| #output_identity) }
+            fn input_identity() -> bool { #guard; #spice::identity_once::<Self>(|| #input_identity) }
+            fn output_identity() -> bool { #guard; #spice::identity_once::<Self>(|| #output_identity) }
         }
     })
 }
