@@ -1,6 +1,9 @@
 #![cfg(feature = "spice")]
 
-use rescript_rs::{spice::Module, ReScript};
+use rescript_rs::{
+    spice::{Dict, Module, Value},
+    ReScript,
+};
 
 #[derive(ReScript, Debug, Clone, PartialEq)]
 #[rescript(codec, serde, module = "Geometry")]
@@ -47,6 +50,19 @@ pub fn square_root(value: f64) -> Result<f64, String> {
     }
 }
 
+/// The scores as JSON, under the given names.
+#[rescript_rs::wasm]
+pub fn scored(names: Option<Vec<String>>, scores: &Dict<Option<f64>>) -> Value {
+    let names = names.unwrap_or_default();
+    let scores = scores
+        .0
+        .iter()
+        .filter(|(name, _)| names.contains(name))
+        .map(|(name, score)| (name.clone(), (*score).into()));
+
+    Value::Object(scores.collect())
+}
+
 #[rescript_rs::wasm]
 pub fn unit_size() -> Size {
     Size {
@@ -56,14 +72,16 @@ pub fn unit_size() -> Size {
     }
 }
 
-/// The binding is laid out as `rescript format` leaves it, and each
-/// parameter has the type its Rust codec reads.
+/// The binding is laid out as `rescript format` leaves it, and encodes
+/// each argument and decodes the result with the codecs ppx-spice picks for
+/// its type.
 #[test]
 fn a_function_is_bound_with_its_own_types() {
     let rendered = Module::new("Geometry")
         .with::<Size>()
         .function("./wasm/geometry.js", fitted_rescript())
         .function("./wasm/geometry.js", square_root_rescript())
+        .function("./wasm/geometry.js", scored_rescript())
         .function("./wasm/geometry.js", unit_size_rescript())
         .render();
     let functions = rendered.split_once("\n\n// The size scaled").unwrap().1;
@@ -73,56 +91,51 @@ fn a_function_is_bound_with_its_own_types() {
         r#"// The size scaled to fit.
 // A size that already fits is returned as is.
 module Fitted = {
-  @spice
-  type arg0 = size
-  @spice
-  type arg1 = fit
-  @spice
-  type arg2 = array<string>
-  @spice
-  type arg3 = string
-  @spice
-  type output = size
-
   @module("./wasm/geometry.js") @variadic
   external wasm: array<JSON.t> => JSON.t = "geometryFitted"
 
   let call = (arg0, arg1, arg2, arg3) => {
-    let arg0 = arg0->arg0_encode
-    let arg1 = arg1->arg1_encode
-    let arg2 = arg2->arg2_encode
-    let arg3 = arg3->arg3_encode
+    let arg0 = size_encode(arg0)
+    let arg1 = fit_encode(arg1)
+    let arg2 = Spice.arrayToJson(Spice.stringToJson, arg2)
+    let arg3 = Spice.stringToJson(arg3)
 
-    wasm([arg0, arg1, arg2, arg3])->output_decode
+    wasm([arg0, arg1, arg2, arg3])->size_decode
   }
 }
 let fitted = Fitted.call
 
 module SquareRoot = {
-  @spice
-  type arg0 = float
-  @spice
-  type output = float
-
   @module("./wasm/geometry.js") @variadic
   external wasm: array<JSON.t> => JSON.t = "squareRoot"
 
   let call = arg0 => {
-    let arg0 = arg0->arg0_encode
+    let arg0 = Spice.floatToJson(arg0)
 
-    wasm([arg0])->output_decode
+    wasm([arg0])->Spice.floatFromJson
   }
 }
 let squareRoot = SquareRoot.call
 
-module UnitSize = {
-  @spice
-  type output = size
+// The scores as JSON, under the given names.
+module Scored = {
+  @module("./wasm/geometry.js") @variadic
+  external wasm: array<JSON.t> => JSON.t = "scored"
 
+  let call = (arg0, arg1) => {
+    let arg0 = Spice.optionToNullableJson(Spice.arrayToJson(Spice.stringToJson, ...), arg0)
+    let arg1 = Spice.dictOptionalToJson(Spice.optionToJson(Spice.floatToJson, ...), arg1)
+
+    Ok(wasm([arg0, arg1]))
+  }
+}
+let scored = Scored.call
+
+module UnitSize = {
   @module("./wasm/geometry.js") @variadic
   external wasm: array<JSON.t> => JSON.t = "unitSize"
 
-  let call = () => wasm([])->output_decode
+  let call = () => wasm([])->size_decode
 }
 let unitSize = UnitSize.call
 "#
