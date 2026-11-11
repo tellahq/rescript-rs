@@ -5,6 +5,8 @@ bun install
 # Bun hard-links package build metadata; isolate it before ReScript writes it.
 copy="$(mktemp -d)"
 cp -rL node_modules/@jfrolich/ppx-spice "$copy/ppx-spice"
+# A copied compiler cache can still name files in the source checkout.
+rm -rf "$copy/ppx-spice/lib"
 rm -rf node_modules/@jfrolich/ppx-spice
 mv "$copy/ppx-spice" node_modules/@jfrolich/ppx-spice
 rmdir "$copy"
