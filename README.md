@@ -124,6 +124,22 @@ polymorphic variant, which ReScript can't rename). A `Host` says how values JSON
 `serde_json::Value`. `Spice::samples` and `Module::codecs` exist to test a type's Rust codec against the ReScript
 one.
 
+### Calling Rust through wasm-bindgen (`wasm-bindgen` feature)
+`#[rescript_rs::wasm]` on a function whose parameters and return type are codec types lets ReScript call it
+through wasm-bindgen with the same types on both sides: neither side writes a `JsValue` or a `JSON.t`.
+
+```rust
+#[rescript_rs::wasm]
+pub fn fitted(size: &Size, bounds: &Size) -> Size { … }
+```
+
+The function stays as written. Beside it the attribute adds the wasm-bindgen export (only with the `wasm-bindgen`
+feature, which the crate that builds the wasm module turns on) and `fitted_rescript()`, which a module renders:
+`Module::new("Geometry").with::<Size>().function("./geometry_wasm.js", fitted_rescript())` adds
+`let fitted: (size, size) => result<size, Spice.decodeError>` to `Geometry.res`. A value crosses as the JavaScript
+value of its spice JSON, encoded and decoded by the codecs on both sides; an argument the Rust codec refuses, a
+returned `Err` and a panic are thrown as exceptions. `name` and `js_name` rename the ReScript value and the export.
+
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\
 The following environment variables may be set to configure *how* and *where*:
@@ -172,6 +188,7 @@ When rescript-rs encounters an unsupported serde attribute, a warning is emitted
 | tokio-impl         | Implement `TS` for types from *tokio*                                                                                                               |
 | jiff-impl          | Implement `TS` for types from *jiff*                                                                                                                |
 | arrayvec-impl      | Implement `TS` for types from *arrayvec*                                                                                                            |
+| wasm-bindgen       | The wasm-bindgen exports of `#[rescript_rs::wasm]` functions, and `rescript_rs::wasm`                                                               |
 
 ### Contributing
 Contributions are always welcome!

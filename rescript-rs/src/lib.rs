@@ -101,6 +101,7 @@
 //! | tokio-impl         | Implement `TS` for types from *tokio*                                                                                                               |
 //! | jiff-impl          | Implement `TS` for types from *jiff*                                                                                                                |
 //! | arrayvec-impl      | Implement `TS` for types from *arrayvec*                                                                                                            |
+//! | wasm-bindgen       | The wasm-bindgen exports of `#[rescript_rs::wasm]` functions, and `rescript_rs::wasm`                                                               |
 //!
 //! ## MSRV
 //! The Minimum Supported Rust Version for this crate is 1.88.0
