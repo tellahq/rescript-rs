@@ -1,0 +1,7 @@
+/build/
+/target/
+/node_modules/
+/src/*.bs.js
+/src/Geometry.res
+/src/wasm/
+/lib/

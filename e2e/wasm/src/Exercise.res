@@ -1,0 +1,6 @@
+let fitted = Geometry.fitted({width: 400., height: 100.}, Within({size: {width: 100., height: 100.}}), ["a", "b"], "n")
+let empty = Geometry.echoShape(Empty({}))
+let placed = Geometry.echoShape(Placed({metadata: {content_type: "image/png", visible: false}, sizes: [{width: 3., height: 4.}]}))
+let unbounded = Geometry.fitted({width: 3., height: 4.}, Unbounded({}), [], "")
+let absent = Geometry.echoOptional(None)
+let present = Geometry.echoOptional(Some("value"))

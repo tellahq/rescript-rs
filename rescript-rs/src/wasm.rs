@@ -1,35 +1,15 @@
-//! Calling Rust from ReScript through wasm-bindgen with the same types on
-//! both sides.
+//! Native serde transport for generated ReScript WASM bindings.
 //!
-//! `#[rescript_rs::wasm]` on a function whose parameters and return type
-//! are [`Spice`] types exports it from the wasm module and describes it to
-//! [`Module::function`](crate::spice::Module::function), which writes the
-//! ReScript binding: a function of the same parameters that returns
-//! `result<output, Spice.decodeError>`. Neither side writes a `JsValue` or
-//! a `JSON.t`.
+//! `#[rescript_rs::wasm]` uses `serde-wasm-bindgen` directly. Its types
+//! derive native serde and `#[rescript(codec, wasm)]`; the generator aligns
+//! runtime keys, constructor names and tagged unit variants, then omits JS
+//! codecs wherever the layout matches. No intermediate JSON tree is built
+//! by this transport. Native serde owns validation and error messages.
 //!
-//! ```ignore
-//! #[rescript_rs::wasm]
-//! pub fn area(size: &Size, scale: f64) -> f64 { … }
-//!
-//! Module::new("Geometry")
-//!     .with::<Size>()
-//!     .function("./geometry_wasm.js", area_rescript())
-//! ```
-//!
-//! writes, in `Geometry.res`, `let area: (size, float) => result<float, _>`.
-//!
-//! A value crosses as the JavaScript value of its spice JSON: the objects,
-//! arrays, strings and numbers `JSON.parse` would give, built directly. The
-//! ReScript side encodes and decodes it with the codecs ppx-spice
-//! generates, so a value is read the same way on both sides. An argument
-//! the Rust codec refuses, an `Err` the function returns and a panic are
-//! thrown as JavaScript exceptions.
-//!
-//! The export only exists with the `wasm-bindgen` feature, which only the
-//! crate that builds the wasm module needs to turn on. A function in a
-//! library crate is exported once the wasm crate re-exports it (`pub use`),
-//! so the linker keeps it.
+//! `#[rescript_rs::wasm(codec)]` explicitly retains the old Spice bridge for
+//! legacy/custom codecs. It uses the JSON-tree helpers below, including
+//! their JSON normalization rules. Native serde is not a drop-in replacement
+//! for that contract (notably f32, non-finite floats, defaults and tuples).
 
 use js_sys::{Array, Object, Reflect};
 pub use wasm_bindgen::{self, JsValue};
@@ -128,4 +108,20 @@ fn value_of(value: &JsValue, depth: usize) -> Result<Value, &'static str> {
     }
 
     Ok(Value::Object(fields))
+}
+
+/// Native serde transport: no intermediate `serde_json::Value` tree.
+pub fn from_serde<T: crate::spice::Wasm>(value: &JsValue, position: usize) -> Result<T, JsValue> {
+    serde_wasm_bindgen::from_value(value.clone())
+        .map_err(|error| JsValue::from_str(&format!("argument {position}: {error}")))
+}
+
+pub fn to_serde<T: crate::spice::Wasm>(value: &T) -> Result<JsValue, JsValue> {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+pub fn codec_result<T: Spice>(value: &T) -> Result<JsValue, JsValue> {
+    Ok(to_js(value))
 }

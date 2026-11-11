@@ -1,0 +1,1 @@
+{"name":"wasm-bridge-e2e","sources":["src"],"dependencies":["@jfrolich/ppx-spice"],"ppx-flags":["@jfrolich/ppx-spice/ppx"],"package-specs":[{"module":"esmodule","in-source":true}],"suffix":".bs.js"}

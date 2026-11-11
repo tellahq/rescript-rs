@@ -12,6 +12,7 @@ use syn::{
 
 #[derive(Default)]
 struct Args {
+    codec: bool,
     name: Option<LitStr>,
     js_name: Option<LitStr>,
 }
@@ -22,6 +23,13 @@ impl Parse for Args {
 
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
+            if key == "codec" {
+                args.codec = true;
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
             input.parse::<Token![=]>()?;
             let value: LitStr = input.parse()?;
 
@@ -129,6 +137,16 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
         syn_err_spanned!(&signature.generics; "a function called from ReScript cannot be generic");
     }
 
+    let from_js = if args.codec {
+        quote!(::rescript_rs::wasm::from_js)
+    } else {
+        quote!(::rescript_rs::wasm::from_serde)
+    };
+    let to_js = if args.codec {
+        quote!(::rescript_rs::wasm::codec_result)
+    } else {
+        quote!(::rescript_rs::wasm::to_serde)
+    };
     let ident = &signature.ident;
     let name = args
         .name
@@ -171,7 +189,7 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
             quote! {
                 match #ident(#(#passed),*) {
                     ::core::result::Result::Ok(value) => {
-                        ::core::result::Result::Ok(::rescript_rs::wasm::to_js(&value))
+                        #to_js(&value)
                     }
                     ::core::result::Result::Err(error) => {
                         ::core::result::Result::Err(::rescript_rs::wasm::error(&error))
@@ -179,16 +197,28 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
                 }
             },
         ),
-        None => (
-            returned,
-            quote!(::core::result::Result::Ok(::rescript_rs::wasm::to_js(&#ident(#(#passed),*)))),
-        ),
+        None => (returned, quote!(#to_js(&#ident(#(#passed),*)))),
     };
     let vis = &function.vis;
     let describe = format_ident!("{}_rescript", ident);
     let shim = format_ident!("{}_wasm", ident);
     let docs = docs(&function);
     let positions = 0..names.len();
+    let input_identity: Vec<_> = decoded
+        .iter()
+        .map(|ty| {
+            if args.codec {
+                quote!(false)
+            } else {
+                quote!(<#ty as ::rescript_rs::spice::Wasm>::input_identity())
+            }
+        })
+        .collect();
+    let output_identity = if args.codec {
+        quote!(false)
+    } else {
+        quote!(<#output as ::rescript_rs::spice::Wasm>::output_identity())
+    };
 
     Ok(quote! {
         #function
@@ -202,9 +232,15 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
                 js_name: #js_name,
                 docs: &[#(#docs),*],
                 args: ::std::vec![
-                    #(<#decoded as ::rescript_rs::spice::Spice>::rescript_type()),*
+                    #(::rescript_rs::spice::BoundaryType {
+                        ty: <#decoded as ::rescript_rs::spice::Spice>::rescript_type(),
+                        identity: #input_identity,
+                    }),*
                 ],
-                output: <#output as ::rescript_rs::spice::Spice>::rescript_type(),
+                output: ::rescript_rs::spice::BoundaryType {
+                    ty: <#output as ::rescript_rs::spice::Spice>::rescript_type(),
+                    identity: #output_identity,
+                },
             }
         }
 
@@ -214,7 +250,7 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
             #vis fn #shim(
                 #(#names: ::rescript_rs::wasm::JsValue),*
             ) -> ::core::result::Result<::rescript_rs::wasm::JsValue, ::rescript_rs::wasm::JsValue> {
-                #(let #names = ::rescript_rs::wasm::from_js::<#decoded>(&#names, #positions)?;)*
+                #(let #names = #from_js::<#decoded>(&#names, #positions)?;)*
 
                 #respond
             }

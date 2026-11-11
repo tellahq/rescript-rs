@@ -1,0 +1,30 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "@jfrolich/ppx-spice": "0.9.0",
+        "@rescript/runtime": "12.3.0-beta.1",
+        "rescript": "12.3.0-beta.1",
+      },
+    },
+  },
+  "packages": {
+    "@jfrolich/ppx-spice": ["@jfrolich/ppx-spice@0.9.0", "", {}, "sha512-ltOoIXSbGDqLkluOHKOiGszMgBqZpscYbTGx1rjflLacc5syqK2YLUwz5ZrBQ3a+bQ98JttJ0cqsROTUPgRmZQ=="],
+
+    "@rescript/darwin-arm64": ["@rescript/darwin-arm64@12.3.0-beta.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-/G6PViJmAhoi9zVRjReyYoV5KxMG7cg+SI4l4XGo3miwIc1PbVuay4Yz2b917qDc+kBDHZiTYkXHt/ifXmR+Sg=="],
+
+    "@rescript/darwin-x64": ["@rescript/darwin-x64@12.3.0-beta.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-rWYy0rLCUUXTbEGFaEuTWKqK+adPhZ0yK2oFHOXkIRkakAs9kJxSSQjwL12xHfHp0OKdyp5ogO4FECkG20XxDg=="],
+
+    "@rescript/linux-arm64": ["@rescript/linux-arm64@12.3.0-beta.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-udNbhVTdKjlokFF9+4Lu6QplzPIQn7s4IU7xaGE32Me9cljdBUsEwr/wj7rz6948/jSN8zDxFh4nz/6H4Ymmdw=="],
+
+    "@rescript/linux-x64": ["@rescript/linux-x64@12.3.0-beta.1", "", { "os": "linux", "cpu": "x64" }, "sha512-d3Xpo26x54b88Yah+Vh0lF7dwDH+twtn+RnPD82eFPvmUgzl1PssorUP9j6tDrOrbmhl79kGSBHwbMDF+3GDMw=="],
+
+    "@rescript/runtime": ["@rescript/runtime@12.3.0-beta.1", "", {}, "sha512-/GLyp1HOaQ44YFyTmruuPmQz9pN54GSkH8PpUmnfXxqrXP7cyfu/qXSeIoUnym8R6Vyaer6VD4ntVhvoie3ODw=="],
+
+    "@rescript/win32-x64": ["@rescript/win32-x64@12.3.0-beta.1", "", { "os": "win32", "cpu": "x64" }, "sha512-bbrXKEBIYouT9M0eKq81OA7xX8LUPgVatCJTuIbv9RhVyyQ4gOIe6OY9+fcRtgNEDcyx9tPsQ3D4N0jk1CQlWQ=="],
+
+    "rescript": ["rescript@12.3.0-beta.1", "", { "dependencies": { "@rescript/runtime": "12.3.0-beta.1" }, "optionalDependencies": { "@rescript/darwin-arm64": "12.3.0-beta.1", "@rescript/darwin-x64": "12.3.0-beta.1", "@rescript/linux-arm64": "12.3.0-beta.1", "@rescript/linux-x64": "12.3.0-beta.1", "@rescript/win32-x64": "12.3.0-beta.1" }, "bin": { "bsc": "cli/bsc.js", "rescript": "cli/rescript.js", "bstracing": "cli/bstracing.js", "rescript-tools": "cli/rescript-tools.js", "rescript-legacy": "cli/rescript-legacy.js" } }, "sha512-rHdkFJE1gKaYorMBOpBkFOdKnICLgYEC5jlPYnTDH2pK9Wh1hBF5orGVI0YPJEgDdFLLxMqCfzA2v2l0x13F2A=="],
+  }
+}

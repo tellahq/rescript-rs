@@ -59,6 +59,7 @@ const PROTOTYPE_KEYS: &[&str] = &[
 
 #[derive(Default)]
 struct ContainerAttr {
+    wasm: bool,
     module: Option<String>,
     name: Option<String>,
     attrs: Option<String>,
@@ -282,6 +283,8 @@ impl ContainerAttr {
         for attr in rescript_attrs(attrs) {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("codec") {
+                } else if meta.path.is_ident("wasm") {
+                    out.wasm = true;
                 } else if meta.path.is_ident("module") {
                     out.module = Some(string(&meta)?);
                 } else if meta.path.is_ident("name") {
@@ -327,6 +330,28 @@ impl ContainerAttr {
             })?;
         }
 
+        if out.wasm {
+            for attr in rescript_attrs(attrs) {
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("rename_all") {
+                        return Err(meta.error("use #[serde(rename_all = …)] for a wasm layout"));
+                    }
+                    if meta.input.peek(syn::Token![=]) {
+                        let _: Expr = meta.value()?.parse()?;
+                    }
+                    Ok(())
+                })?;
+            }
+            if out.serde || out.legacy || out.fallback.is_some() || out.attrs.is_some() {
+                return Err(Error::new(Span::call_site(), "wasm needs native serde derives; legacy, fallback and arbitrary attrs need the codec bridge"));
+            }
+            if is_enum && out.tag.is_none() && !out.poly {
+                return Err(Error::new(Span::call_site(), "wasm enums need #[serde(tag = \"type\")] (an internally tagged representation)"));
+            }
+            if is_enum {
+                out.runtime_names = true;
+            }
+        }
         Ok(out)
     }
 }
@@ -608,7 +633,10 @@ fn parse_fields(fields: &syn::FieldsNamed, rename: Option<RenameRule>) -> Result
                 ));
             }
 
-            if attr.skip_serializing_if.is_some() && attr.serde_default.is_none() {
+            if attr.skip_serializing_if.is_some()
+                && attr.serde_default.is_none()
+                && option_inner(&field.ty).is_none()
+            {
                 return Err(Error::new(
                     field.span(),
                     "#[serde(skip_serializing_if)] needs #[serde(default)], so a reader gets the \
@@ -1031,6 +1059,7 @@ fn serde_default(field: &ParsedField) -> TokenStream {
 
 struct Gen {
     krate: Path,
+    align_serde: bool,
 }
 
 impl Gen {
@@ -1064,6 +1093,10 @@ impl Gen {
         let spice = self.spice();
         let mut attrs = vec![];
 
+        if self.align_serde && field.key != field.rescript_name {
+            let attr = format!("@as({:?})", field.key);
+            attrs.push(quote!(::std::string::String::from(#attr)));
+        }
         if field.key != field.rescript_name {
             let key = format!("@spice.key({:?})", field.key);
 
@@ -1222,7 +1255,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         .krate
         .clone()
         .unwrap_or_else(|| syn::parse_quote!(::rescript_rs));
-    let gen = Gen { krate };
+    let gen = Gen {
+        align_serde: container.wasm,
+        krate,
+    };
     let spice = gen.spice();
 
     check_tuples(&input.data)?;
@@ -1361,6 +1397,11 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
     });
 
+    let wasm = if container.wasm {
+        derive_wasm(&gen, &container, &input, &generics)?
+    } else {
+        quote!()
+    };
     let serde = container.serde.then(|| {
         let mut de_generics = generics.clone();
 
@@ -1418,6 +1459,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         #declare
 
         #serde
+        #wasm
     })
 }
 
@@ -1431,10 +1473,15 @@ fn reject_skipped_fields(data: &Data) -> Result<()> {
     };
 
     for field in fields {
-        if FieldAttr::parse(&field.attrs)?
-            .skip_serializing_if
-            .is_some()
-        {
+        let attr = FieldAttr::parse(&field.attrs)?;
+        let omits_none = attr.optional
+            && option_inner(&field.ty).is_some()
+            && attr
+                .skip_serializing_if
+                .as_ref()
+                .is_some_and(|p| quote!(#p).to_string().replace(' ', "") == "Option::is_none");
+
+        if attr.skip_serializing_if.is_some() && !omits_none {
             return Err(Error::new(
                 field.span(),
                 "#[serde(skip_serializing_if)] needs a codec without module: ppx-spice writes \
@@ -1734,6 +1781,7 @@ fn rescript_value(gen: &Gen, container: &ContainerAttr, data: &Data) -> Result<T
                 };
 
                 arms.push(match &variant.fields {
+                    Fields::Unit if container.wasm && container.tag.is_some() => quote!(Self::#constructor => ::std::option::Option::Some(format!("{}({{}})", #head)),),
                     Fields::Unit => quote!(Self::#constructor => ::std::option::Option::Some(#head),),
                     Fields::Unnamed(unnamed) => {
                         let vars: Vec<Ident> =
@@ -1963,6 +2011,7 @@ fn derive_enum(gen: &Gen, container: &ContainerAttr, data: &syn::DataEnum) -> Re
         );
 
         lines.push(match &v.variant.fields {
+            Fields::Unit if container.wasm && container.tag.is_some() => quote!(format!("{}  | {}{}({{}})\n", #docs, #alias, #constructor)),
             Fields::Unit => quote!(format!("{}  | {}{}\n", #docs, #alias, #constructor)),
             Fields::Unnamed(unnamed) => {
                 let types = unnamed.unnamed.iter().map(|f| {
@@ -2266,4 +2315,154 @@ fn samples(gen: &Gen, data: &Data) -> Result<TokenStream> {
         }
         Data::Union(_) => Ok(quote!(::std::vec::Vec::new())),
     }
+}
+
+/// Native serde is a separate contract from the legacy Spice serde adapter.
+/// Only layouts the generator controls can bypass a JS codec.
+fn derive_wasm(
+    gen: &Gen,
+    container: &ContainerAttr,
+    input: &DeriveInput,
+    generics: &Generics,
+) -> Result<TokenStream> {
+    let spice = gen.spice();
+    let ident = &input.ident;
+    let mut generics = generics.clone();
+
+    for param in generics.type_params_mut() {
+        param.bounds.push(syn::parse_quote!(#spice::Wasm));
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    for meta in serde_metas(&input.attrs)? {
+        if !["tag", "rename_all", "rename_all_fields"]
+            .iter()
+            .any(|name| meta.path().is_ident(name))
+        {
+            return Err(Error::new(
+                meta.span(),
+                "this serde container attribute needs the codec bridge",
+            ));
+        }
+    }
+    if matches!(input.data, Data::Enum(_)) {
+        let serde_tag = serde_metas(&input.attrs)?
+            .iter()
+            .find(|meta| meta.path().is_ident("tag"))
+            .map(meta_string)
+            .transpose()?;
+        if serde_tag != container.tag {
+            return Err(Error::new(
+                input.span(),
+                "declare the shared enum tag with #[serde(tag = \"type\")]",
+            ));
+        }
+    }
+    let mut types = vec![];
+    let fields: Vec<&syn::Fields> = match &input.data {
+        Data::Struct(data) => vec![&data.fields],
+        Data::Enum(data) => {
+            for variant in &data.variants {
+                let attr = VariantAttr::parse(&variant.attrs)?;
+                let serde_alias = serde_metas(&variant.attrs)?
+                    .iter()
+                    .find(|meta| meta.path().is_ident("rename"))
+                    .map(meta_string)
+                    .transpose()?;
+                if attr.alias != serde_alias {
+                    return Err(Error::new(variant.span(), "use #[serde(rename = …)] to align the native serde and ReScript constructor names"));
+                }
+                for meta in serde_metas(&variant.attrs)? {
+                    if !meta.path().is_ident("rename") {
+                        return Err(Error::new(
+                            meta.span(),
+                            "this serde variant attribute needs the codec bridge",
+                        ));
+                    }
+                }
+                if attr.untagged
+                    || attr.other
+                    || !attr.aliases.is_empty()
+                    || matches!(variant.fields, Fields::Unnamed(_))
+                {
+                    return Err(Error::new(variant.span(), "wasm enums need unit or named-field variants without untagged/other/aliases"));
+                }
+            }
+            data.variants.iter().map(|v| &v.fields).collect()
+        }
+        Data::Union(_) => unreachable!(),
+    };
+    for fields in fields {
+        let Fields::Named(fields) = fields else {
+            if matches!(fields, Fields::Unnamed(_)) {
+                return Err(Error::new(
+                    fields.span(),
+                    "wasm newtypes need an explicitly supported runtime layout",
+                ));
+            }
+            continue;
+        };
+        for raw in &fields.named {
+            for meta in serde_metas(&raw.attrs)? {
+                if !["rename", "default", "skip_serializing_if"]
+                    .iter()
+                    .any(|name| meta.path().is_ident(name))
+                {
+                    return Err(Error::new(
+                        meta.span(),
+                        "this serde field attribute needs the codec bridge",
+                    ));
+                }
+            }
+        }
+        for field in parse_fields(fields, container.rename_fields)? {
+            let raw = field.ident.unraw().to_string();
+            let native_key = field.attr.serde_rename.clone().unwrap_or_else(|| {
+                container
+                    .rename_fields
+                    .map_or_else(|| raw.clone(), |rule| rule.field(&raw))
+            });
+            if field.key != native_key {
+                return Err(Error::new(
+                    field.ident.span(),
+                    "use #[serde(rename = …)] to align the native serde and ReScript field keys",
+                ));
+            }
+            if field.attr.codec.is_some()
+                || field.attr.default.is_some()
+                || field.attr.rescript_type.is_some()
+            {
+                return Err(Error::new(
+                    field.ident.span(),
+                    "custom field codecs/types need the codec bridge",
+                ));
+            }
+            if let Some(inner) = option_inner(&field.ty) {
+                let skips_none =
+                    field.attr.skip_serializing_if.as_ref().is_some_and(|p| {
+                        quote!(#p).to_string().replace(' ', "") == "Option::is_none"
+                    });
+                if !field.attr.optional || !skips_none {
+                    return Err(Error::new(field.ident.span(), "wasm option fields need #[rescript(optional)] and #[serde(skip_serializing_if = \"Option::is_none\")]"));
+                }
+                types.push(inner.clone());
+            } else {
+                if field.attr.skip_serializing_if.is_some() {
+                    return Err(Error::new(
+                        field.ident.span(),
+                        "conditional field omission needs the codec bridge",
+                    ));
+                }
+                types.push(field.ty);
+            }
+        }
+    }
+    let input_identity = quote!(true #(&& <#types as #spice::Wasm>::input_identity())*);
+    let output_identity = quote!(true #(&& <#types as #spice::Wasm>::output_identity())*);
+
+    Ok(quote! {
+        impl #impl_generics #spice::Wasm for #ident #ty_generics #where_clause {
+            fn input_identity() -> bool { #spice::identity_once::<Self>(|| #input_identity) }
+            fn output_identity() -> bool { #spice::identity_once::<Self>(|| #output_identity) }
+        }
+    })
 }

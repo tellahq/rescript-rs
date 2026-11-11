@@ -15,9 +15,9 @@
 
 use std::borrow::Cow;
 
-use crate::export::format::format;
-
 pub use serde_json::{self, Map, Number, Value};
+
+use crate::export::format::format;
 
 /// `Spice.decodeError`.
 #[derive(Debug, Clone, PartialEq)]
@@ -260,36 +260,92 @@ enum Item<H: Host> {
     Function(String),
 }
 
-/// A Rust function ReScript calls through wasm-bindgen, as
-/// `#[rescript_rs::wasm]` describes it (`<function>_rescript()`).
+/// A native serde type whose ReScript runtime layout is known to the generator.
+/// Implemented by `#[rescript(codec, wasm)]` alongside ordinary serde derives.
+pub trait Wasm: Spice + 'static + ::serde::Serialize + ::serde::de::DeserializeOwned {
+    fn input_identity() -> bool {
+        false
+    }
+    fn output_identity() -> bool {
+        false
+    }
+}
+
+/// Recursive layouts conservatively retain their JS codecs.
+pub fn identity_once<T: 'static>(check: impl FnOnce() -> bool) -> bool {
+    use std::{any::TypeId, cell::RefCell, collections::HashSet};
+    thread_local! { static VISITING: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new()); }
+    let id = TypeId::of::<T>();
+    if !VISITING.with(|set| set.borrow_mut().insert(id)) {
+        return false;
+    }
+    let result = check();
+    VISITING.with(|set| set.borrow_mut().remove(&id));
+    result
+}
+
+macro_rules! wasm_scalar {
+    ($($ty:ty),*) => {$(
+        impl Wasm for $ty {
+            fn input_identity() -> bool { true }
+            fn output_identity() -> bool { true }
+        }
+    )*};
+}
+wasm_scalar!(String, bool, i32, f64, Value);
+impl Wasm for () {}
+impl<T: Wasm> Wasm for Vec<T> {
+    fn input_identity() -> bool {
+        T::input_identity()
+    }
+    fn output_identity() -> bool {
+        T::output_identity()
+    }
+}
+impl<T: Wasm> Wasm for Option<T> {}
+impl<T: Wasm> Wasm for Box<T> {
+    fn input_identity() -> bool {
+        T::input_identity()
+    }
+    fn output_identity() -> bool {
+        T::output_identity()
+    }
+}
+
+/// A boundary value's declared type and whether it needs a JS codec.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundaryType {
+    pub ty: String,
+    pub identity: bool,
+}
+
+/// A Rust function ReScript calls through wasm-bindgen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-    /// The ReScript value.
     pub name: &'static str,
-    /// The wasm-bindgen export.
     pub js_name: &'static str,
-    /// The function's doc comment, one entry per line.
     pub docs: &'static [&'static str],
-    /// The ReScript type of each parameter, in order.
-    pub args: Vec<String>,
-    /// The ReScript type of what it returns.
-    pub output: String,
+    pub args: Vec<BoundaryType>,
+    pub output: BoundaryType,
 }
 
 impl Function {
-    /// The binding: a module holding the export and `call`, which encodes
-    /// each argument and decodes the result with its type's own codecs,
-    /// then the function under its own name. Every line is laid out as
-    /// `rescript format` leaves it.
     fn render(&self, js_module: &str) -> String {
-        let module = {
-            let mut name = self.name.to_owned();
-
-            name[..1].make_ascii_uppercase();
-            name
-        };
+        let mut module = self.name.to_owned();
+        module[..1].make_ascii_uppercase();
         let args: Vec<String> = (0..self.args.len()).map(|i| format!("arg{i}")).collect();
-        let decoded = |json: &str| ValueCodec::of(&self.output).decode(json);
+        let ty = |value: &BoundaryType| {
+            if value.identity {
+                value.ty.clone()
+            } else {
+                "JSON.t".into()
+            }
+        };
+        let arg_types = match self.args.as_slice() {
+            [] => "unit".into(),
+            [one] => ty(one),
+            many => format!("({})", many.iter().map(ty).collect::<Vec<_>>().join(", ")),
+        };
         let mut out: String = self
             .docs
             .iter()
@@ -297,34 +353,41 @@ impl Function {
             .collect();
 
         out.push_str(&format!(
-            "module {module} = {{\n  @module({}) @variadic\n  external wasm: array<JSON.t> => JSON.t = {}\n\n",
+            "module {module} = {{\n  @module({})\n  external wasm: {} => {} = {}\n\n",
             rescript_string(js_module),
+            arg_types,
+            ty(&self.output),
             rescript_string(self.js_name),
         ));
-
-        if args.is_empty() {
-            out.push_str(&format!("  let call = () => {}\n", decoded("wasm([])")));
+        let parameters = match args.as_slice() {
+            [] => "()".into(),
+            [one] => one.clone(),
+            _ => format!("({})", args.join(", ")),
+        };
+        let converted: Vec<String> = self
+            .args
+            .iter()
+            .zip(&args)
+            .filter_map(|(ty, arg)| {
+                (!ty.identity)
+                    .then(|| format!("    let {arg} = {}\n", ValueCodec::of(&ty.ty).encode(arg)))
+            })
+            .collect();
+        let call = format!("wasm({})", args.join(", "));
+        let call = if self.output.identity {
+            format!("Ok({call})")
         } else {
-            let parameters = match args.as_slice() {
-                [only] => only.clone(),
-                _ => format!("({})", args.join(", ")),
-            };
+            ValueCodec::of(&self.output.ty).decode(&call)
+        };
 
-            out.push_str(&format!("  let call = {parameters} => {{\n"));
-
-            for (arg, ty) in args.iter().zip(&self.args) {
-                out.push_str(&format!(
-                    "    let {arg} = {}\n",
-                    ValueCodec::of(ty).encode(arg)
-                ));
-            }
-
+        if converted.is_empty() {
+            out.push_str(&format!("  let call = {parameters} => {call}\n"));
+        } else {
             out.push_str(&format!(
-                "\n    {}\n  }}\n",
-                decoded(&format!("wasm([{}])", args.join(", ")))
+                "  let call = {parameters} => {{\n{}\n    {call}\n  }}\n",
+                converted.concat()
             ));
         }
-
         out.push_str(&format!("}}\nlet {} = {module}.call\n", self.name));
         out
     }

@@ -31,7 +31,7 @@ semver-impl = ["semver"]
 smol_str-impl = ["smol_str"]
 serde-json-impl = ["serde_json"]
 spice = ["serde_json", "serde"]
-wasm-bindgen = ["spice", "dep:wasm-bindgen", "dep:js-sys"]
+wasm-bindgen = ["spice", "dep:wasm-bindgen", "dep:js-sys", "dep:serde-wasm-bindgen"]
 no-serde-warnings = ["rescript-rs-macros/no-serde-warnings"]
 tokio-impl = ["tokio"]
 jiff-impl = ["jiff"]
@@ -68,3 +68,5 @@ js-sys = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 jiff = { version = "0.2", optional = true }
 arrayvec = { version = ">= 0.6, < 0.8", optional = true }
+
+serde-wasm-bindgen = { version = "0.6.5", optional = true }
