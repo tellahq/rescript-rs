@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 pub struct Size {
     pub width: f64,
     pub height: f64,
-    #[rescript(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -77,7 +76,6 @@ pub fn unit_size() -> Size {
 pub struct Metadata {
     #[serde(rename = "content-type")]
     pub content_type: String,
-    #[rescript(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
 }

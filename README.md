@@ -117,7 +117,7 @@ serde derives and serde reads and writes the JSON ppx-spice does. A codec can ha
 its declaration has a type variable for each (`struct Size<T>` declares `type t<'t> = {width: 't, …}`) and
 `Size<f64>` is `Size.t<float>` in the types that use it. `f32` reads as the nearest `f32` and writes its shortest decimal (`0.1`).
 Field attributes: `name` (the ReScript field), `key` (`@spice.key`), `default` (`@spice.default`, a ReScript
-expression; simple literals and constructors are translated, otherwise add `rust_default`), `optional` (`field?:`),
+expression; simple literals and constructors are translated, otherwise add `rust_default`), `optional` (`field?:`; `#[serde(skip_serializing_if = "Option::is_none")]` on an `Option` field implies it),
 `codec` + `with` (`@spice.codec` and the Rust module with `decode`/`encode`/`samples`). Variant attribute: `rename`
 (ReScript's `@as`, which names the constructor in memory and in JSON; `@spice.as`, the JSON name only, on a
 polymorphic variant, which ReScript can't rename). A `Host` says how values JSON cannot hold (`Infinity`, `bigint`, `Set`) stand in a
@@ -152,9 +152,9 @@ the generated binding is just `Ok(wasm(arg0, arg1))`: no JS Spice conversion or
 copying, and no redundant validation of trusted same-build Rust output.
 
 Eligibility is recursive through records, arrays, boxes and tagged variants.
-Optional record fields need `#[rescript(optional)]` and
-`#[serde(skip_serializing_if = "Option::is_none")]`; omitted keys are valid
-ReScript optional fields. Optional fields whose values can themselves be null
+An `Option` field needs `#[serde(skip_serializing_if = "Option::is_none")]`,
+which alone makes it an optional ReScript field (`label?: string`): omitted
+keys are valid ReScript optional fields. Optional fields whose values can themselves be null
 (JSON, unit or another option) are rejected: native serde would lose the
 difference between a present null and an absent field. Standalone options, unit values and recursive layouts
 retain JS codecs where representations differ, but still use native serde in

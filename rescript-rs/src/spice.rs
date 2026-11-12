@@ -269,7 +269,6 @@ enum Item<H: Host> {
 /// #[derive(Clone, serde::Serialize, serde::Deserialize, ReScript)]
 /// #[rescript(codec, wasm)]
 /// struct Invalid {
-///     #[rescript(optional)]
 ///     #[serde(skip_serializing_if = "Option::is_none")]
 ///     value: Option<serde_json::Value>,
 /// }

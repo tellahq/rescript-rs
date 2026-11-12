@@ -499,6 +499,16 @@ fn lower_first(name: &str) -> String {
     }
 }
 
+/// `#[serde(skip_serializing_if = "Option::is_none")]` on an `Option`
+/// field: serde leaves `None` out, so the ReScript field is `name?:`.
+fn omits_none(attr: &FieldAttr, ty: &Type) -> bool {
+    option_inner(ty).is_some()
+        && attr
+            .skip_serializing_if
+            .as_ref()
+            .is_some_and(|path| quote!(#path).to_string().replace(' ', "") == "Option::is_none")
+}
+
 /// `T` when `ty` is `Option<T>`.
 fn option_inner(ty: &Type) -> Option<&Type> {
     let Type::Path(path) = ty else {
@@ -592,7 +602,10 @@ fn parse_fields(fields: &syn::FieldsNamed, rename: Option<RenameRule>) -> Result
         .iter()
         .map(|field| {
             let ident = field.ident.clone().expect("named field");
-            let attr = FieldAttr::parse(&field.attrs)?;
+            let mut attr = FieldAttr::parse(&field.attrs)?;
+
+            attr.optional |= omits_none(&attr, &field.ty);
+
             let raw = ident.unraw().to_string();
             let json_name = attr
                 .serde_rename
@@ -1107,6 +1120,8 @@ impl Gen {
             let default = format!("@spice.default({default})");
 
             attrs.push(quote!(::std::string::String::from(#default)));
+        } else if field.attr.optional && matches!(field.attr.serde_default, Some(None)) {
+            // `#[serde(default)]` on an optional field: absent is already None.
         } else if field.attr.serde_default.is_some() {
             let value = serde_default(field);
             let ty = &field.ty;
@@ -1474,14 +1489,8 @@ fn reject_skipped_fields(data: &Data) -> Result<()> {
 
     for field in fields {
         let attr = FieldAttr::parse(&field.attrs)?;
-        let omits_none = attr.optional
-            && option_inner(&field.ty).is_some()
-            && attr
-                .skip_serializing_if
-                .as_ref()
-                .is_some_and(|p| quote!(#p).to_string().replace(' ', "") == "Option::is_none");
 
-        if attr.skip_serializing_if.is_some() && !omits_none {
+        if attr.skip_serializing_if.is_some() && !omits_none(&attr, &field.ty) {
             return Err(Error::new(
                 field.span(),
                 "#[serde(skip_serializing_if)] needs a codec without module: ppx-spice writes \
@@ -2438,12 +2447,8 @@ fn derive_wasm(
                 ));
             }
             if let Some(inner) = option_inner(&field.ty) {
-                let skips_none =
-                    field.attr.skip_serializing_if.as_ref().is_some_and(|p| {
-                        quote!(#p).to_string().replace(' ', "") == "Option::is_none"
-                    });
-                if !field.attr.optional || !skips_none {
-                    return Err(Error::new(field.ident.span(), "wasm option fields need #[rescript(optional)] and #[serde(skip_serializing_if = \"Option::is_none\")]"));
+                if !omits_none(&field.attr, &field.ty) {
+                    return Err(Error::new(field.ident.span(), "a wasm option field needs #[serde(skip_serializing_if = \"Option::is_none\")]: serde would write None as null"));
                 }
                 optional_types.push(inner.clone());
                 types.push(inner.clone());

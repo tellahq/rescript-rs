@@ -1,8 +1,9 @@
 #![cfg(feature = "spice")]
 
 //! `#[rescript(codec)]` reads serde's attributes: `rename`, `rename_all`,
-//! `rename_all_fields`, `tag` and `default`, whose Rust value it writes
-//! as the ReScript `@spice.default(…)`.
+//! `rename_all_fields`, `tag`, `default`, whose Rust value it writes
+//! as the ReScript `@spice.default(…)`, and
+//! `skip_serializing_if = "Option::is_none"`, an optional field.
 
 use rescript_rs::{
     spice::{Module, Plain, Spice},
@@ -59,6 +60,10 @@ pub struct Settings {
     pub font_size: f64,
     #[serde(default = "centre")]
     pub focus: Point,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 }
 
 #[derive(ReScript, Debug, Clone, PartialEq)]
@@ -112,6 +117,8 @@ type t = {
   fontSize: float,
   @spice.default({x: 0.5, y: 1.})
   focus: point,
+  subtitle?: string,
+  caption?: string,
 }
 
 @spice.serde @tag("type")
@@ -124,7 +131,7 @@ type shape =
 
 #[test]
 fn reads_and_writes_the_serde_names() {
-    let json = json!({"storyId": "s", "type": "k", "PK": "p", "og_image": "o"});
+    let json = json!({"storyId": "s", "type": "k", "PK": "p", "og_image": "o", "subtitle": "u"});
     let settings = Settings::decode::<Plain>(&json).unwrap();
 
     assert_eq!(settings.grouping, Grouping::Chunked);
@@ -135,7 +142,7 @@ fn reads_and_writes_the_serde_names() {
         json!({
             "storyId": "s", "type": "k", "PK": "p", "og_image": "o",
             "grouping": "chunked", "tags": [], "enabled": false,
-            "fontSize": 40, "focus": {"x": 0.5, "y": 1},
+            "fontSize": 40, "focus": {"x": 0.5, "y": 1}, "subtitle": "u",
         })
     );
     assert_eq!(Grouping::SingleWord.encode::<Plain>(), json!("single_word"));
