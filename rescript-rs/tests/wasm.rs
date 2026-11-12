@@ -95,6 +95,29 @@ fn an_option_field_serde_writes_as_null_crosses_only_into_rust() {
     );
 }
 
+/// wasm-bindgen's `None` is `undefined` in both directions, as ReScript's
+/// is: an option of a scalar needs no codec either way.
+#[test]
+fn an_option_of_a_scalar_crosses_as_it_is() {
+    use rescript_rs::spice::BoundaryType;
+
+    let layouts = [
+        (echo_number_rescript(), "option<float>"),
+        (echo_count_rescript(), "option<int>"),
+        (echo_flag_rescript(), "option<bool>"),
+    ];
+
+    for (function, ty) in layouts {
+        let boundary = BoundaryType {
+            ty: ty.into(),
+            identity: true,
+        };
+
+        assert_eq!(function.args, vec![boundary.clone()]);
+        assert_eq!(function.output, boundary);
+    }
+}
+
 /// The constructor is the pub function returning Self, the methods the pub
 /// ones taking self; scalars and `()` cross as wasm-bindgen passes them.
 #[test]
@@ -125,7 +148,7 @@ fn a_class_is_bound_with_its_constructor_and_methods() {
             "make",
             "GeometryTally",
             vec![("array<Geometry.size>", true), ("string", true)],
-            "",
+            "t",
             true
         )
     );
@@ -181,6 +204,9 @@ fn export_wasm_binding() {
                 .function("./geometry.js", echo_format_rescript())
                 .with::<Curve>()
                 .function("./geometry.js", echo_curve_rescript())
+                .function("./geometry.js", echo_number_rescript())
+                .function("./geometry.js", echo_count_rescript())
+                .function("./geometry.js", echo_flag_rescript())
                 .class("./geometry.js", tally_rescript())
                 .render(),
         )
@@ -230,6 +256,9 @@ mod exports {
             serde_json::json!({"width":1,"height":1})
         );
         assert_eq!(square_root_wasm(9.0), Ok(3.0));
+        assert_eq!(echo_number_wasm(Some(0.0)), Ok(Some(0.0)));
+        assert_eq!(echo_count_wasm(None), Ok(None));
+        assert_eq!(echo_flag_wasm(Some(false)), Ok(Some(false)));
     }
 
     #[wasm_bindgen_test]

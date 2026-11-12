@@ -12,6 +12,8 @@ use syn::{
     Visibility,
 };
 
+use crate::spice::option_inner;
+
 #[derive(Default)]
 struct Args {
     codec: bool,
@@ -127,15 +129,16 @@ fn docs(attrs: &[Attribute]) -> Vec<String> {
 }
 
 /// `f64`, `i32` and `bool` cross as wasm-bindgen's own numbers and
-/// booleans, with no `JsValue` and no serde.
+/// booleans, with no `JsValue` and no serde. So does an `Option` of one:
+/// its `None` is `undefined` in both directions, as ReScript's is.
 fn native(ty: &Type) -> bool {
-    scalar(ty)
+    scalar(ty) || option_inner(ty).is_some_and(scalar)
 }
 
-/// What a function answers as wasm-bindgen passes it: a scalar, or `()`,
-/// which JavaScript gets as `undefined`, ReScript's `unit`.
+/// What a function answers as wasm-bindgen passes it: a native value, or
+/// `()`, which JavaScript gets as `undefined`, ReScript's `unit`.
 fn native_output(ty: &Type) -> bool {
-    scalar(ty) || matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
+    native(ty) || matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
 fn scalar(ty: &Type) -> bool {
@@ -165,13 +168,6 @@ fn snake_case(name: &str) -> String {
 /// Whether `ty` is the type the impl block is for.
 fn is_self(ty: &Type, owner: &Ident) -> bool {
     matches!(ty, Type::Path(path) if path.qself.is_none() && (path.path.is_ident("Self") || path.path.is_ident(owner)))
-}
-
-/// What the export answers: the function's value, an object of the class,
-/// or a value wasm-bindgen passes as it is.
-enum Output<'a> {
-    Value(&'a Type),
-    Object(TokenStream),
 }
 
 /// One callable: its description for `Module::function`/`Module::class`
@@ -229,7 +225,9 @@ fn bound(
         let position = params.len();
         let arg = format_ident!("arg{}", position, span = input.pat.span());
 
-        if !codec && native(&owned) {
+        let native = !codec && native(&owned);
+
+        if native {
             params.push(quote!(#arg: #owned));
         } else {
             params.push(quote!(#arg: #js_value));
@@ -243,9 +241,12 @@ fn bound(
 
         let identity = if codec {
             quote!(false)
+        } else if native {
+            quote!(true)
         } else {
             quote!(<#owned as ::rescript_rs::spice::Wasm>::input_identity())
         };
+
         boundary.push(quote! {
             ::rescript_rs::spice::BoundaryType {
                 ty: <#owned as ::rescript_rs::spice::Spice>::rescript_type(),
@@ -263,26 +264,41 @@ fn bound(
         Some(ok) => (ok, true),
         None => (returned, false),
     };
-    let output = match object {
-        Some(wrapper) => Output::Object(wrapper),
-        None => Output::Value(ok),
-    };
-    let (returns, respond, output_type) = match &output {
-        Output::Object(wrapper) => (
+    let (returns, respond, output) = match object {
+        // The class declares the object's type, `t`.
+        Some(wrapper) => (
             wrapper.clone(),
             quote!(::core::result::Result::Ok(#wrapper(value))),
-            None,
+            quote! {
+                ::rescript_rs::spice::BoundaryType { ty: "t".into(), identity: true }
+            },
         ),
-        Output::Value(ty) if !codec && native_output(ty) => (
-            quote!(#ty),
-            quote!(::core::result::Result::Ok(value)),
-            Some((*ty).clone()),
-        ),
-        Output::Value(ty) => (
-            js_value.clone(),
-            quote!(#to_js(&value)),
-            Some((*ty).clone()),
-        ),
+        None => {
+            let native = !codec && native_output(ok);
+            let identity = if codec {
+                quote!(false)
+            } else if native {
+                quote!(true)
+            } else {
+                quote!(<#ok as ::rescript_rs::spice::Wasm>::output_identity())
+            };
+            let boundary = quote! {
+                ::rescript_rs::spice::BoundaryType {
+                    ty: <#ok as ::rescript_rs::spice::Spice>::rescript_type(),
+                    identity: #identity,
+                }
+            };
+
+            if native {
+                (
+                    quote!(#ok),
+                    quote!(::core::result::Result::Ok(value)),
+                    boundary,
+                )
+            } else {
+                (js_value.clone(), quote!(#to_js(&value)), boundary)
+            }
+        }
     };
     let called = call(passed);
     let body = if fallible {
@@ -304,28 +320,6 @@ fn bound(
             #respond
         }
     };
-    let output_boundary = match output_type {
-        // The class renders the object's type, `t`.
-        None => quote! {
-            ::rescript_rs::spice::BoundaryType { ty: ::std::string::String::new(), identity: true }
-        },
-        Some(ty) => {
-            let identity = if codec {
-                quote!(false)
-            } else if native_output(&ty) {
-                quote!(true)
-            } else {
-                quote!(<#ty as ::rescript_rs::spice::Wasm>::output_identity())
-            };
-
-            quote! {
-                ::rescript_rs::spice::BoundaryType {
-                    ty: <#ty as ::rescript_rs::spice::Spice>::rescript_type(),
-                    identity: #identity,
-                }
-            }
-        }
-    };
     let docs = docs(attrs);
     let describe = quote! {
         ::rescript_rs::spice::Function {
@@ -333,7 +327,7 @@ fn bound(
             js_name: #js_name,
             docs: &[#(#docs),*],
             args: ::std::vec![#(#boundary),*],
-            output: #output_boundary,
+            output: #output,
         }
     };
 
@@ -488,12 +482,14 @@ fn class_attribute(args: Args, block: ItemImpl) -> Result<TokenStream> {
             }
         }
 
-        // wasm-bindgen's struct export names the `wasm_bindgen` crate by a
-        // relative path, which a crate without that dependency lacks.
+        // wasm-bindgen's exports name the `wasm_bindgen` crate by a relative
+        // path, which a crate without that dependency lacks. The struct sits
+        // in a module that imports the name. Its methods import it in a
+        // block, where a path in a signature (`super::Size`) still means
+        // what it does in the impl block.
         ::rescript_rs::wasm_items! {
             #[doc(hidden)]
             mod #exports {
-                use super::*;
                 use ::rescript_rs::wasm::wasm_bindgen;
 
                 /// The JavaScript class: re-export it from the crate that
@@ -502,7 +498,14 @@ fn class_attribute(args: Args, block: ItemImpl) -> Result<TokenStream> {
                     js_name = #js_name,
                     wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
                 )]
-                pub struct #wrapper(#owner);
+                pub struct #wrapper(pub(super) super::#owner);
+            }
+
+            #[doc(hidden)]
+            pub use #exports::#wrapper;
+
+            const _: () = {
+                use ::rescript_rs::wasm::wasm_bindgen;
 
                 #[wasm_bindgen::prelude::wasm_bindgen(
                     js_class = #js_name,
@@ -512,10 +515,7 @@ fn class_attribute(args: Args, block: ItemImpl) -> Result<TokenStream> {
                     #constructor_export
                     #(#method_exports)*
                 }
-            }
-
-            #[doc(hidden)]
-            pub use #exports::#wrapper;
+            };
         }
     })
 }
@@ -574,6 +574,13 @@ fn member(
     }
 
     let name = camel_case(&ident.to_string());
+
+    // `make` constructs the object in ReScript and `free` releases it. A
+    // method named `free` would also replace the JavaScript class's own.
+    if matches!(name.as_str(), "make" | "free") {
+        syn_err_spanned!(ident; "a class already has `{}`: name the method something else", name);
+    }
+
     let Bound {
         describe,
         params,

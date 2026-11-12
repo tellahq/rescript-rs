@@ -362,12 +362,27 @@ impl Function {
     fn render(&self, js_module: &str) -> String {
         let external = format!("@module({})", rescript_string(js_module));
 
-        binding(self, &external, self.js_name, false, &self.output)
+        binding(self, &external, false)
     }
 }
 
 /// A Rust type ReScript holds as an opaque wasm-bindgen object: its
 /// constructor and its methods.
+///
+/// The class has its own `free`, which releases the object. A method of
+/// that name would replace it in JavaScript:
+/// ```compile_fail
+/// pub struct Pool;
+///
+/// #[rescript_rs::wasm]
+/// impl Pool {
+///     pub fn new() -> Self {
+///         Pool
+///     }
+///
+///     pub fn free(&mut self) {}
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Class {
     /// The ReScript module the object's type `t` is declared in.
@@ -375,7 +390,7 @@ pub struct Class {
     /// The JavaScript class wasm-bindgen exports.
     pub js_name: &'static str,
     pub docs: &'static [&'static str],
-    /// `make`, which returns a new object.
+    /// `make`, which answers a new object, `t`.
     pub constructor: Function,
     /// Called on an object, which is not among their `args`.
     pub methods: Vec<Function>,
@@ -384,26 +399,10 @@ pub struct Class {
 impl Class {
     fn render(&self, js_module: &str) -> String {
         let new = format!("@module({}) @new", rescript_string(js_module));
-        let object = BoundaryType {
-            ty: "t".into(),
-            identity: true,
-        };
-        let mut members = vec![binding(
-            &self.constructor,
-            &new,
-            self.js_name,
-            false,
-            &object,
-        )];
+        let mut members = vec![binding(&self.constructor, &new, false)];
 
         for method in &self.methods {
-            members.push(binding(
-                method,
-                "@send",
-                method.js_name,
-                true,
-                &method.output,
-            ));
+            members.push(binding(method, "@send", true));
         }
         members.push("@send external free: t => unit = \"free\"\n".into());
 
@@ -443,13 +442,7 @@ impl Class {
 /// `function` as a module holding its external, `wasm`, and `call`, which
 /// encodes the arguments and decodes the result where their runtime layouts
 /// differ from serde's. A method's external also takes the object, `t`.
-fn binding(
-    function: &Function,
-    external: &str,
-    js_name: &str,
-    method: bool,
-    output: &BoundaryType,
-) -> String {
+fn binding(function: &Function, external: &str, method: bool) -> String {
     let mut module = function.name.to_owned();
     module[..1].make_ascii_uppercase();
     let args: Vec<String> = (0..function.args.len())
@@ -486,8 +479,8 @@ fn binding(
     out.push_str(&format!(
         "module {module} = {{\n  {external}\n  external wasm: {} => {} = {}\n\n",
         arg_types,
-        ty(output),
-        rescript_string(js_name),
+        ty(&function.output),
+        rescript_string(function.js_name),
     ));
     let parameters = match passed.as_slice() {
         [] => "()".into(),
@@ -504,10 +497,10 @@ fn binding(
         })
         .collect();
     let call = format!("wasm({})", passed.join(", "));
-    let call = if output.identity {
+    let call = if function.output.identity {
         format!("Ok({call})")
     } else {
-        ValueCodec::of(&output.ty).decode(&call)
+        ValueCodec::of(&function.output.ty).decode(&call)
     };
 
     if converted.is_empty() {

@@ -507,7 +507,7 @@ fn omits_none(attr: &FieldAttr, ty: &Type) -> bool {
 }
 
 /// `T` when `ty` is `Option<T>`.
-fn option_inner(ty: &Type) -> Option<&Type> {
+pub(crate) fn option_inner(ty: &Type) -> Option<&Type> {
     let Type::Path(path) = ty else {
         return None;
     };

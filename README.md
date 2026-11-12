@@ -174,7 +174,8 @@ ReScript's `None` is `undefined`, which serde reads as `None`, so it crosses int
 Rust as it is, but serde writes `None` as `null`, so a value Rust returns is
 decoded. Option fields whose values can themselves be null
 (JSON, unit or another option) are rejected: native serde would lose the
-difference between a present null and an absent field. Standalone options, unit values and recursive layouts
+difference between a present null and an absent field. Standalone options
+(other than a scalar's, below), unit values and recursive layouts
 retain JS codecs where representations differ, but still use native serde in
 Rust. Unknown/custom serde attributes are rejected rather than guessing.
 `#[rescript(serde)]` is the legacy Spice-to-serde adapter and cannot be combined
@@ -189,6 +190,9 @@ arbitrary external JSON. This optimization is confined to the typed WASM boundar
 `f64`, `i32` and `bool` arguments and results, and a function returning
 nothing, cross as wasm-bindgen passes them: no `JsValue` and no serde. A
 ReScript `float` is always a number, so nothing is lost by not checking it.
+So does an `Option` of one of them: wasm-bindgen's `None` is `undefined` in
+both directions, as ReScript's is, so `Option<f64>` is an `option<float>` with
+no codec.
 
 On an inherent `impl` block, `#[rescript_rs::wasm]` binds a class: ReScript
 holds the Rust value as an opaque object.
@@ -244,7 +248,8 @@ too frequent for the wrapper. `free` releases the object; calling it after that
 throws. The export is a `ClockWasm` wrapper class named `Clock` in JavaScript
 (`js_name` renames it, `name` the ReScript module). A type of the module the
 class is rendered into named `t` would be shadowed by the object's, so it is
-refused.
+refused. So is a method named `make` or `free`: `free` would replace the
+JavaScript class's own, and the object would never be released.
 
 Enable `wasm-bindgen` in the final WASM crate and `pub use` each library's
 `<function>_wasm` and `<Type>Wasm` exports there so the linker retains them. The application function

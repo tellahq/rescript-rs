@@ -132,6 +132,23 @@ pub fn echo_curve(curve: Curve) -> Curve {
     curve
 }
 
+/// An option of a scalar crosses as wasm-bindgen passes it: `None` is
+/// `undefined` in both directions, as ReScript's is.
+#[rescript_rs::wasm]
+pub fn echo_number(number: Option<f64>) -> Option<f64> {
+    number
+}
+
+#[rescript_rs::wasm]
+pub fn echo_count(count: Option<i32>) -> Option<i32> {
+    count
+}
+
+#[rescript_rs::wasm]
+pub fn echo_flag(flag: Option<bool>) -> Option<bool> {
+    flag
+}
+
 /// Sizes added up as they come.
 pub struct Tally {
     label: String,
@@ -153,7 +170,9 @@ impl Tally {
         })
     }
 
-    pub fn add(&mut self, size: Size) {
+    /// `self::Size` is a path from this module: the export has to read
+    /// it from here too.
+    pub fn add(&mut self, size: self::Size) {
         self.sizes.push(size);
     }
 
