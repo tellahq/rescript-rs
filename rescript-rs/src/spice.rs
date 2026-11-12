@@ -439,12 +439,12 @@ impl Class {
     }
 }
 
-/// `function` as a module holding its external, `wasm`, and `call`, which
-/// encodes the arguments and decodes the result where their runtime layouts
-/// differ from serde's. A method's external also takes the object, `t`.
+/// `function` as ReScript calls it. Where every runtime layout equals
+/// serde's, that is its typed external. Otherwise it is a module holding
+/// the external, `wasm`, and `call`, which encodes the arguments and
+/// decodes what comes back. Only decoding can fail, so only a decoded
+/// result is a `result`. A method's external also takes the object, `t`.
 fn binding(function: &Function, external: &str, method: bool) -> String {
-    let mut module = function.name.to_owned();
-    module[..1].make_ascii_uppercase();
     let args: Vec<String> = (0..function.args.len())
         .map(|i| format!("arg{i}"))
         .collect();
@@ -460,28 +460,37 @@ fn binding(function: &Function, external: &str, method: bool) -> String {
         .into_iter()
         .chain(function.args.iter().map(ty))
         .collect();
-    let arg_types = match types.as_slice() {
-        [] => "unit".into(),
-        [one] => one.clone(),
-        many => format!("({})", many.join(", ")),
-    };
-    let passed: Vec<String> = method
-        .then(|| "self".to_owned())
-        .into_iter()
-        .chain(args.iter().cloned())
-        .collect();
+    let signature = format!(
+        "{} => {} = {}",
+        match types.as_slice() {
+            [] => "unit".into(),
+            [one] => one.clone(),
+            many => format!("({})", many.join(", ")),
+        },
+        ty(&function.output),
+        rescript_string(function.js_name),
+    );
     let mut out: String = function
         .docs
         .iter()
         .map(|line| format!("// {line}\n"))
         .collect();
 
-    out.push_str(&format!(
-        "module {module} = {{\n  {external}\n  external wasm: {} => {} = {}\n\n",
-        arg_types,
-        ty(&function.output),
-        rescript_string(function.js_name),
-    ));
+    if function.output.identity && function.args.iter().all(|arg| arg.identity) {
+        out.push_str(&format!(
+            "{external}\nexternal {}: {signature}\n",
+            function.name
+        ));
+        return out;
+    }
+
+    let mut module = function.name.to_owned();
+    module[..1].make_ascii_uppercase();
+    let passed: Vec<String> = method
+        .then(|| "self".to_owned())
+        .into_iter()
+        .chain(args.iter().cloned())
+        .collect();
     let parameters = match passed.as_slice() {
         [] => "()".into(),
         [one] => one.clone(),
@@ -498,10 +507,14 @@ fn binding(function: &Function, external: &str, method: bool) -> String {
         .collect();
     let call = format!("wasm({})", passed.join(", "));
     let call = if function.output.identity {
-        format!("Ok({call})")
+        call
     } else {
         ValueCodec::of(&function.output.ty).decode(&call)
     };
+
+    out.push_str(&format!(
+        "module {module} = {{\n  {external}\n  external wasm: {signature}\n\n"
+    ));
 
     if converted.is_empty() {
         out.push_str(&format!("  let call = {parameters} => {call}\n"));
@@ -779,8 +792,10 @@ impl<H: Host> Module<H> {
 
     /// A function exported from the wasm-bindgen module at `js_module`
     /// (as the generated file imports it, e.g. `./wasm/app.js`), called as
-    /// `name(arg, …)`: it encodes its arguments, calls the export and
-    /// decodes what comes back, a `result<output, Spice.decodeError>`. See
+    /// `name(arg, …)`. Where every runtime layout equals serde's it is the
+    /// typed external. Otherwise it encodes those arguments, calls the
+    /// export and decodes what comes back; a decoded result is a
+    /// `result<output, Spice.decodeError>`, any other the value itself. See
     /// `rescript_rs::wasm`.
     pub fn function(mut self, js_module: &str, function: Function) -> Self {
         self.items.push(Item::Function(function.render(js_module)));
@@ -790,9 +805,8 @@ impl<H: Host> Module<H> {
     /// A class exported from the wasm-bindgen module at `js_module`, as
     /// `module Name = { type t … }`: `make` constructs an object, each
     /// method takes it first (`clock->Name.outputMs(ms)`), and `free`
-    /// releases it. Like a function's, each member's `call` answers a
-    /// `result`; its typed external, `Name.OutputMs.wasm`, answers the value
-    /// itself where no codec runs.
+    /// releases it. Each member is bound as a function is: an external
+    /// where no codec runs, a `result` only where its result is decoded.
     pub fn class(mut self, js_module: &str, class: Class) -> Self {
         let mut scope = Some(self.name);
 

@@ -163,8 +163,14 @@ renamed. `poly` (`[#Hardcover | #Paperback | #"e-book"]`) and
 `#[rescript_rs::wasm]` on a function exports it through **direct native serde**
 (`serde-wasm-bindgen`), without a `serde_json::Value` bridge. Add its generated
 `<function>_rescript()` description to `Module::function`. Where layouts match,
-the generated binding is just `Ok(wasm(arg0, arg1))`: no JS Spice conversion or
+the generated binding is just the typed external
+(`external fitted: (size, fit) => size = "fitted"`): no JS Spice conversion or
 copying, and no redundant validation of trusted same-build Rust output.
+
+Where a layout differs, the binding is a module holding the external, `wasm`,
+and `call`, which encodes those arguments and decodes that result. Only
+decoding what comes back can fail, so only then is the binding's result a
+`result<output, Spice.decodeError>`; otherwise it is the value.
 
 Eligibility is recursive through records, arrays, boxes and tagged variants.
 An `Option` field with `#[serde(skip_serializing_if = "Option::is_none")]` is
@@ -220,32 +226,23 @@ written, so the type is tested natively. `clock_rescript()` describes it for
 module Clock = {
   type t
 
-  module Make = {
-    @module("./app.js") @new
-    external wasm: float => t = "Clock"
+  @module("./app.js") @new
+  external make: float => t = "Clock"
 
-    let call = arg0 => Ok(wasm(arg0))
-  }
-  let make = Make.call
+  @send
+  external outputMs: (t, float) => float = "outputMs"
 
-  module OutputMs = {
-    @send
-    external wasm: (t, float) => float = "outputMs"
-
-    let call = (self, arg0) => Ok(wasm(self, arg0))
-  }
-  let outputMs = OutputMs.call
-
-  …
+  @send
+  external setRate: (t, float) => unit = "setRate"
 
   @send external free: t => unit = "free"
 }
 ```
 
-Each member's `call` answers a `result`, as a function's does; where no codec
-runs, its external (`Clock.OutputMs.wasm`) answers the value itself, for calls
-too frequent for the wrapper. `free` releases the object; calling it after that
-throws. The export is a `ClockWasm` wrapper class named `Clock` in JavaScript
+Each member is bound as a function is: an external where no codec runs
+(`clock->Clock.outputMs(ms)` compiles to `clock.outputMs(ms)`), a `result`
+only where what comes back is decoded. `free` releases the object; calling it
+after that throws. The export is a `ClockWasm` wrapper class named `Clock` in JavaScript
 (`js_name` renames it, `name` the ReScript module). A type of the module the
 class is rendered into named `t` would be shadowed by the object's, so it is
 refused. So is a method named `make` or `free`: `free` would replace the
@@ -253,8 +250,8 @@ JavaScript class's own, and the object would never be released.
 
 Enable `wasm-bindgen` in the final WASM crate and `pub use` each library's
 `<function>_wasm` and `<Type>Wasm` exports there so the linker retains them. The application function
-stays an ordinary typed Rust function. Errors are thrown as JS exceptions;
-successful generated calls return `Ok(value)`. `name` and `js_name` rename the
+stays an ordinary typed Rust function. An `Err` it returns and an argument it
+refuses are thrown as JS exceptions. `name` and `js_name` rename the
 ReScript function and the export, respectively.
 
 `e2e/wasm/run.sh` compiles real generated ReScript and optimized WASM and runs

@@ -43,6 +43,49 @@ fn a_function_is_bound_with_its_own_types() {
     assert!(!scored_rescript().args[1].identity);
 }
 
+/// A binding is a `result` only where it decodes what comes back, which is
+/// all that can fail: with no codec it is the external itself, and with
+/// only its arguments encoded it answers the value.
+#[test]
+fn only_a_decoded_result_is_a_result() {
+    assert_eq!(
+        Module::new("Geometry")
+            .function("./geometry.js", unit_size_rescript())
+            .function("./geometry.js", label_or_rescript())
+            .function("./geometry.js", echo_optional_rescript())
+            .render(),
+        "@module(\"./geometry.js\")
+external unitSize: unit => size = \"unitSize\"
+
+// A standalone option is encoded going in (serde reads `null`); the
+// string that comes back needs no decoding, so nothing here can fail.
+module LabelOr = {
+  @module(\"./geometry.js\")
+  external wasm: (JSON.t, string) => string = \"labelOr\"
+
+  let call = (arg0, arg1) => {
+    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
+
+    wasm(arg0, arg1)
+  }
+}
+let labelOr = LabelOr.call
+
+module EchoOptional = {
+  @module(\"./geometry.js\")
+  external wasm: JSON.t => JSON.t = \"echoOptional\"
+
+  let call = arg0 => {
+    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
+
+    wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
+  }
+}
+let echoOptional = EchoOptional.call
+"
+    );
+}
+
 /// A payload-free enum needs neither a tag nor `poly`: an ordinary variant
 /// is the string serde writes, under the same name.
 #[test]
@@ -201,6 +244,7 @@ fn export_wasm_binding() {
                 .function("./geometry.js", unit_size_rescript())
                 .function("./geometry.js", echo_shape_rescript())
                 .function("./geometry.js", echo_optional_rescript())
+                .function("./geometry.js", label_or_rescript())
                 .function("./geometry.js", echo_format_rescript())
                 .with::<Curve>()
                 .function("./geometry.js", echo_curve_rescript())

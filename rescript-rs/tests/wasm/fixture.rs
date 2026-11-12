@@ -101,6 +101,13 @@ pub fn echo_optional(value: Option<String>) -> Option<String> {
     value
 }
 
+/// A standalone option is encoded going in (serde reads `null`); the
+/// string that comes back needs no decoding, so nothing here can fail.
+#[rescript_rs::wasm]
+pub fn label_or(label: Option<String>, fallback: &str) -> String {
+    label.unwrap_or_else(|| fallback.into())
+}
+
 /// A payload-free enum is a string on both sides: serde's default name, or
 /// the renamed one.
 #[derive(ReScript, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
