@@ -100,3 +100,19 @@ pub fn echo_shape(shape: Shape) -> Shape {
 pub fn echo_optional(value: Option<String>) -> Option<String> {
     value
 }
+
+/// A payload-free enum is a string on both sides: serde's default name, or
+/// the renamed one.
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[rescript(codec, wasm, module = "Geometry")]
+pub enum Format {
+    Hardcover,
+    Paperback,
+    #[serde(rename = "e-book")]
+    Ebook,
+}
+
+#[rescript_rs::wasm]
+pub fn echo_format(format: Format) -> Format {
+    format
+}

@@ -142,8 +142,23 @@ The declaration uses `@tag("type")`, `@as("unbounded") Unbounded({})` and
 `@as("within") Within({width: float, height: float})`. The empty inline record
 keeps unit variants as tagged objects, not runtime strings. Renamed record
 fields receive both `@as` and `@spice.key`: runtime and JSON keys match.
-Payload enums must be internally tagged; payload-free string enums can use
-`poly` and serde's default external string tags.
+Payload enums must be internally tagged. A payload-free enum needs no tag: it
+is an ordinary variant, the same string on both sides.
+
+```rust
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, rescript_rs::ReScript)]
+#[rescript(codec, wasm, module = "Library")]
+enum Format {
+    Hardcover,
+    Paperback,
+    #[serde(rename = "e-book")]
+    Ebook,
+}
+```
+
+That is `Hardcover | Paperback | @as("e-book") Ebook`: serde's names unless
+renamed. `poly` (`[#Hardcover | #Paperback | #"e-book"]`) and
+`#[serde(rename_all = …)]` are choices, not requirements.
 
 `#[rescript_rs::wasm]` on a function exports it through **direct native serde**
 (`serde-wasm-bindgen`), without a `serde_json::Value` bridge. Add its generated

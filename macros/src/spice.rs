@@ -345,9 +345,6 @@ impl ContainerAttr {
             if out.serde || out.legacy || out.fallback.is_some() || out.attrs.is_some() {
                 return Err(Error::new(Span::call_site(), "wasm needs native serde derives; legacy, fallback and arbitrary attrs need the codec bridge"));
             }
-            if is_enum && out.tag.is_none() && !out.poly {
-                return Err(Error::new(Span::call_site(), "wasm enums need #[serde(tag = \"type\")] (an internally tagged representation)"));
-            }
             if is_enum {
                 out.runtime_names = true;
             }
@@ -2395,6 +2392,9 @@ fn derive_wasm(
                     || matches!(variant.fields, Fields::Unnamed(_))
                 {
                     return Err(Error::new(variant.span(), "wasm enums need unit or named-field variants without untagged/other/aliases"));
+                }
+                if container.tag.is_none() && !matches!(variant.fields, Fields::Unit) {
+                    return Err(Error::new(variant.span(), "a wasm enum with fields needs #[serde(tag = \"type\")]: only an internally tagged variant has the same layout in ReScript"));
                 }
             }
             data.variants.iter().map(|v| &v.fields).collect()

@@ -4,3 +4,5 @@ let placed = Geometry.echoShape(Placed({metadata: {content_type: "image/png", vi
 let unbounded = Geometry.fitted({width: 3., height: 4.}, Unbounded({}), [], "")
 let absent = Geometry.echoOptional(None)
 let present = Geometry.echoOptional(Some("value"))
+let paperback = Geometry.echoFormat(Paperback)
+let ebook = Geometry.echoFormat(Ebook)
