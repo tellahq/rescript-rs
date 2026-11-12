@@ -120,8 +120,7 @@ use std::{
 
 #[cfg(feature = "spice")]
 pub use rescript_rs_macros::wasm;
-pub use rescript_rs_macros::ReScript;
-pub use rescript_rs_macros::ReScript as TS;
+pub use rescript_rs_macros::{ReScript, ReScript as TS};
 
 pub use crate::export::ExportError;
 

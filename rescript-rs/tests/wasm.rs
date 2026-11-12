@@ -285,8 +285,7 @@ mod exports {
 
     #[wasm_bindgen_test]
     fn a_class_is_constructed_and_called() {
-        let mut tally =
-            TallyWasm::new(js(r#"[{"width": 2, "height": 3}]"#), "box".into()).unwrap();
+        let mut tally = TallyWasm::new(js(r#"[{"width": 2, "height": 3}]"#), "box".into()).unwrap();
 
         assert_eq!(tally.add(js(r#"{"width": 1, "height": 1}"#)), Ok(()));
         assert_eq!(tally.area(2.0), Ok(28.0));

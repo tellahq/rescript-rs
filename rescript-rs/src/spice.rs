@@ -397,11 +397,21 @@ impl Class {
         )];
 
         for method in &self.methods {
-            members.push(binding(method, "@send", method.js_name, true, &method.output));
+            members.push(binding(
+                method,
+                "@send",
+                method.js_name,
+                true,
+                &method.output,
+            ));
         }
         members.push("@send external free: t => unit = \"free\"\n".into());
 
-        let mut out: String = self.docs.iter().map(|line| format!("// {line}\n")).collect();
+        let mut out: String = self
+            .docs
+            .iter()
+            .map(|line| format!("// {line}\n"))
+            .collect();
 
         out.push_str(&format!("module {} = {{\n  type t\n", self.name));
 
@@ -442,7 +452,9 @@ fn binding(
 ) -> String {
     let mut module = function.name.to_owned();
     module[..1].make_ascii_uppercase();
-    let args: Vec<String> = (0..function.args.len()).map(|i| format!("arg{i}")).collect();
+    let args: Vec<String> = (0..function.args.len())
+        .map(|i| format!("arg{i}"))
+        .collect();
     let ty = |value: &BoundaryType| {
         if value.identity {
             value.ty.clone()

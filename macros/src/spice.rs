@@ -2469,8 +2469,7 @@ fn derive_wasm(
     }
     let guard = quote!(const { #(assert!(!<#optional_types as #spice::Wasm>::NULLABLE, "a WASM option field cannot contain a nullable value; use the codec bridge");)* });
     let input_identity = quote!(true #(&& <#types as #spice::Wasm>::input_identity())*);
-    let output_identity =
-        quote!(!#writes_null #(&& <#types as #spice::Wasm>::output_identity())*);
+    let output_identity = quote!(!#writes_null #(&& <#types as #spice::Wasm>::output_identity())*);
 
     Ok(quote! {
         impl #impl_generics #spice::Wasm for #ident #ty_generics #where_clause {

@@ -235,7 +235,11 @@ fn bound(
             params.push(quote!(#arg: #js_value));
             decode.push(quote!(let #arg = #from_js::<#owned>(&#arg, #position)?;));
         }
-        passed.push(if borrowed { quote!(&#arg) } else { quote!(#arg) });
+        passed.push(if borrowed {
+            quote!(&#arg)
+        } else {
+            quote!(#arg)
+        });
 
         let identity = if codec {
             quote!(false)
@@ -274,7 +278,11 @@ fn bound(
             quote!(::core::result::Result::Ok(value)),
             Some((*ty).clone()),
         ),
-        Output::Value(ty) => (js_value.clone(), quote!(#to_js(&value)), Some((*ty).clone())),
+        Output::Value(ty) => (
+            js_value.clone(),
+            quote!(#to_js(&value)),
+            Some((*ty).clone()),
+        ),
     };
     let called = call(passed);
     let body = if fallible {
@@ -343,7 +351,9 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
     match syn::parse2::<Item>(item)? {
         Item::Fn(function) => function_attribute(args, function),
         Item::Impl(block) => class_attribute(args, block),
-        other => syn_err_spanned!(other; "#[rescript_rs::wasm] goes on a function or an impl block"),
+        other => {
+            syn_err_spanned!(other; "#[rescript_rs::wasm] goes on a function or an impl block")
+        }
     }
 }
 
@@ -429,6 +439,7 @@ fn class_attribute(args: Args, block: ItemImpl) -> Result<TokenStream> {
         .js_name
         .map_or_else(|| name.clone(), |name| name.value());
     let wrapper = format_ident!("{}Wasm", owner);
+    let exports = format_ident!("__rescript_rs_{}", snake_case(&owner.to_string()));
     let mut constructor: Option<Member> = None;
     let mut methods = vec![];
 
@@ -477,24 +488,34 @@ fn class_attribute(args: Args, block: ItemImpl) -> Result<TokenStream> {
             }
         }
 
+        // wasm-bindgen's struct export names the `wasm_bindgen` crate by a
+        // relative path, which a crate without that dependency lacks.
         ::rescript_rs::wasm_items! {
-            /// The JavaScript class: re-export it from the crate that builds
-            /// the wasm module so the linker keeps it.
-            #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
-                js_name = #js_name,
-                wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
-            )]
             #[doc(hidden)]
-            pub struct #wrapper(#owner);
+            mod #exports {
+                use super::*;
+                use ::rescript_rs::wasm::wasm_bindgen;
 
-            #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
-                js_class = #js_name,
-                wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
-            )]
-            impl #wrapper {
-                #constructor_export
-                #(#method_exports)*
+                /// The JavaScript class: re-export it from the crate that
+                /// builds the wasm module so the linker keeps it.
+                #[wasm_bindgen::prelude::wasm_bindgen(
+                    js_name = #js_name,
+                    wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
+                )]
+                pub struct #wrapper(#owner);
+
+                #[wasm_bindgen::prelude::wasm_bindgen(
+                    js_class = #js_name,
+                    wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
+                )]
+                impl #wrapper {
+                    #constructor_export
+                    #(#method_exports)*
+                }
             }
+
+            #[doc(hidden)]
+            pub use #exports::#wrapper;
         }
     })
 }

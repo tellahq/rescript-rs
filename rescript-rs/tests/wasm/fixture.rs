@@ -159,7 +159,12 @@ impl Tally {
 
     /// The area of every size, times `scale` squared.
     pub fn area(&self, scale: f64) -> f64 {
-        self.sizes.iter().map(|size| size.width * size.height).sum::<f64>() * scale * scale
+        self.sizes
+            .iter()
+            .map(|size| size.width * size.height)
+            .sum::<f64>()
+            * scale
+            * scale
     }
 
     pub fn count(&self) -> i32 {
