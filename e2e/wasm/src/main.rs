@@ -16,6 +16,9 @@ fn main() {
             .function("./wasm/wasm_bridge_e2e.js", echo_optional_rescript())
             .function("./wasm/wasm_bridge_e2e.js", square_root_rescript())
             .function("./wasm/wasm_bridge_e2e.js", echo_format_rescript())
+            .with::<Curve>()
+            .function("./wasm/wasm_bridge_e2e.js", echo_curve_rescript())
+            .class("./wasm/wasm_bridge_e2e.js", tally_rescript())
             .render()
     );
 }

@@ -507,6 +507,12 @@ pub fn rescript(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 ///
 /// `name` is the ReScript value (the function's name in camelCase by
 /// default), `js_name` the wasm-bindgen export (`name` by default).
+///
+/// On an inherent impl block it binds a class: the one `pub` function
+/// returning `Self` is the constructor, the `pub` methods taking `&self` or
+/// `&mut self` its methods. It adds a `<Type>Wasm` export and
+/// `<type>_rescript()`, which `Module::class` renders. `name` is the
+/// ReScript module (the type's name by default), `js_name` the class.
 #[proc_macro_attribute]
 pub fn wasm(
     args: proc_macro::TokenStream,

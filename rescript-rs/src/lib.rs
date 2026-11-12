@@ -101,7 +101,7 @@
 //! | tokio-impl         | Implement `TS` for types from *tokio*                                                                                                               |
 //! | jiff-impl          | Implement `TS` for types from *jiff*                                                                                                                |
 //! | arrayvec-impl      | Implement `TS` for types from *arrayvec*                                                                                                            |
-//! | wasm-bindgen       | The wasm-bindgen exports of `#[rescript_rs::wasm]` functions, and `rescript_rs::wasm`                                                               |
+//! | wasm-bindgen       | The wasm-bindgen exports of `#[rescript_rs::wasm]` functions and classes, and `rescript_rs::wasm`                                                   |
 //!
 //! ## MSRV
 //! The Minimum Supported Rust Version for this crate is 1.88.0
@@ -139,17 +139,13 @@ mod tokio;
 #[cfg(feature = "wasm-bindgen")]
 pub mod wasm;
 
-/// The wasm-bindgen export `#[rescript_rs::wasm]` adds to a function:
-/// nothing without the `wasm-bindgen` feature.
+/// The wasm-bindgen exports `#[rescript_rs::wasm]` adds: nothing without
+/// the `wasm-bindgen` feature.
 #[cfg(feature = "wasm-bindgen")]
 #[doc(hidden)]
 #[macro_export]
-macro_rules! wasm_shim {
-    ($js_name:literal $($item:tt)*) => {
-        #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
-            js_name = $js_name,
-            wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
-        )]
+macro_rules! wasm_items {
+    ($($item:tt)*) => {
         $($item)*
     };
 }
@@ -157,7 +153,7 @@ macro_rules! wasm_shim {
 #[cfg(not(feature = "wasm-bindgen"))]
 #[doc(hidden)]
 #[macro_export]
-macro_rules! wasm_shim {
+macro_rules! wasm_items {
     ($($item:tt)*) => {};
 }
 

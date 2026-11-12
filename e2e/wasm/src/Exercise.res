@@ -6,3 +6,15 @@ let absent = Geometry.echoOptional(None)
 let present = Geometry.echoOptional(Some("value"))
 let paperback = Geometry.echoFormat(Paperback)
 let ebook = Geometry.echoFormat(Ebook)
+let noControls = Geometry.echoCurve({name: "ease", controls: None})
+let controls = Geometry.echoCurve({name: "custom", controls: Some([0.1, 0.2])})
+
+let tally = Geometry.Tally.make([{width: 2., height: 3.}], "box")->Result.getOrThrow
+let added = tally->Geometry.Tally.add({width: 1., height: 1.})
+let area = tally->Geometry.Tally.area(2.)
+let rawArea = tally->Geometry.Tally.Area.wasm(1.)
+let count = tally->Geometry.Tally.count
+let isEmpty = tally->Geometry.Tally.isEmpty
+let largest = tally->Geometry.Tally.largest
+let scaled = tally->Geometry.Tally.scaled(2.)
+let () = tally->Geometry.Tally.free

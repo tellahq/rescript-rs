@@ -1,13 +1,15 @@
-//! `#[rescript_rs::wasm]`: a Rust function called from ReScript through
-//! wasm-bindgen with its own types on both sides.
+//! `#[rescript_rs::wasm]`: a Rust function, or a type's constructor and
+//! methods, called from ReScript through wasm-bindgen with their own types
+//! on both sides.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
     parse::{Parse, ParseStream},
     spanned::Spanned,
-    Expr, ExprLit, FnArg, GenericArgument, ItemFn, Lit, LitStr, Meta, Pat, PathArguments, Result,
-    ReturnType, Token, Type,
+    Attribute, Expr, ExprLit, FnArg, GenericArgument, Ident, ImplItem, ImplItemFn, Item, ItemFn,
+    ItemImpl, Lit, LitStr, Meta, Pat, PathArguments, Result, ReturnType, Signature, Token, Type,
+    Visibility,
 };
 
 #[derive(Default)]
@@ -108,9 +110,8 @@ fn fallible(ty: &Type) -> Option<&Type> {
     }
 }
 
-fn docs(function: &ItemFn) -> Vec<String> {
-    function
-        .attrs
+fn docs(attrs: &[Attribute]) -> Vec<String> {
+    attrs
         .iter()
         .filter_map(|attr| match &attr.meta {
             Meta::NameValue(doc) if doc.path.is_ident("doc") => match &doc.value {
@@ -125,11 +126,74 @@ fn docs(function: &ItemFn) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStream> {
-    let args: Args = syn::parse2(args)?;
-    let function: ItemFn = syn::parse2(item)?;
-    let signature = &function.sig;
+/// `f64`, `i32` and `bool` cross as wasm-bindgen's own numbers and
+/// booleans, with no `JsValue` and no serde.
+fn native(ty: &Type) -> bool {
+    scalar(ty)
+}
 
+/// What a function answers as wasm-bindgen passes it: a scalar, or `()`,
+/// which JavaScript gets as `undefined`, ReScript's `unit`.
+fn native_output(ty: &Type) -> bool {
+    scalar(ty) || matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
+}
+
+fn scalar(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+
+    path.qself.is_none()
+        && ["f64", "i32", "bool"]
+            .iter()
+            .any(|name| path.path.is_ident(name))
+}
+
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+
+    out
+}
+
+/// Whether `ty` is the type the impl block is for.
+fn is_self(ty: &Type, owner: &Ident) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none() && (path.path.is_ident("Self") || path.path.is_ident(owner)))
+}
+
+/// What the export answers: the function's value, an object of the class,
+/// or a value wasm-bindgen passes as it is.
+enum Output<'a> {
+    Value(&'a Type),
+    Object(TokenStream),
+}
+
+/// One callable: its description for `Module::function`/`Module::class`
+/// and the body of its wasm-bindgen export.
+struct Bound {
+    /// `rescript_rs::spice::Function { … }`.
+    describe: TokenStream,
+    /// The export's parameters after the receiver.
+    params: Vec<TokenStream>,
+    returns: TokenStream,
+    body: TokenStream,
+}
+
+fn bound(
+    signature: &Signature,
+    attrs: &[Attribute],
+    codec: bool,
+    name: String,
+    js_name: String,
+    call: impl FnOnce(Vec<TokenStream>) -> TokenStream,
+    object: Option<TokenStream>,
+) -> Result<Bound> {
     if signature.asyncness.is_some() {
         syn_err_spanned!(signature; "an async function cannot be called from ReScript yet");
     }
@@ -137,45 +201,53 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
         syn_err_spanned!(&signature.generics; "a function called from ReScript cannot be generic");
     }
 
-    let from_js = if args.codec {
+    let from_js = if codec {
         quote!(::rescript_rs::wasm::from_js)
     } else {
         quote!(::rescript_rs::wasm::from_serde)
     };
-    let to_js = if args.codec {
+    let to_js = if codec {
         quote!(::rescript_rs::wasm::codec_result)
     } else {
         quote!(::rescript_rs::wasm::to_serde)
     };
-    let ident = &signature.ident;
-    let name = args
-        .name
-        .map_or_else(|| camel_case(&ident.to_string()), |name| name.value());
-    let js_name = args
-        .js_name
-        .map_or_else(|| name.clone(), |name| name.value());
-    let mut names = vec![];
-    let mut decoded = vec![];
+    let js_value = quote!(::rescript_rs::wasm::JsValue);
+    let mut params = vec![];
+    let mut decode = vec![];
     let mut passed = vec![];
+    let mut boundary = vec![];
 
-    for (index, input) in signature.inputs.iter().enumerate() {
+    for input in &signature.inputs {
         let FnArg::Typed(input) = input else {
-            syn_err_spanned!(input; "a method cannot be called from ReScript: use a free function");
+            continue;
         };
         if !matches!(&*input.pat, Pat::Ident(_)) {
             syn_err_spanned!(&input.pat; "name the parameter");
         }
 
         let (owned, borrowed) = parameter(&input.ty)?;
-        let arg = format_ident!("arg{}", index, span = input.pat.span());
+        let position = params.len();
+        let arg = format_ident!("arg{}", position, span = input.pat.span());
 
-        passed.push(if borrowed {
-            quote!(&#arg)
+        if !codec && native(&owned) {
+            params.push(quote!(#arg: #owned));
         } else {
-            quote!(#arg)
+            params.push(quote!(#arg: #js_value));
+            decode.push(quote!(let #arg = #from_js::<#owned>(&#arg, #position)?;));
+        }
+        passed.push(if borrowed { quote!(&#arg) } else { quote!(#arg) });
+
+        let identity = if codec {
+            quote!(false)
+        } else {
+            quote!(<#owned as ::rescript_rs::spice::Wasm>::input_identity())
+        };
+        boundary.push(quote! {
+            ::rescript_rs::spice::BoundaryType {
+                ty: <#owned as ::rescript_rs::spice::Spice>::rescript_type(),
+                identity: #identity,
+            }
         });
-        names.push(arg);
-        decoded.push(owned);
     }
 
     let unit: Type = syn::parse_quote!(());
@@ -183,42 +255,129 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
         ReturnType::Default => &unit,
         ReturnType::Type(_, ty) => &**ty,
     };
-    let (output, respond) = match fallible(returned) {
-        Some(ok) => (
-            ok,
-            quote! {
-                match #ident(#(#passed),*) {
-                    ::core::result::Result::Ok(value) => {
-                        #to_js(&value)
-                    }
-                    ::core::result::Result::Err(error) => {
-                        ::core::result::Result::Err(::rescript_rs::wasm::error(&error))
-                    }
-                }
-            },
+    let (ok, fallible) = match fallible(returned) {
+        Some(ok) => (ok, true),
+        None => (returned, false),
+    };
+    let output = match object {
+        Some(wrapper) => Output::Object(wrapper),
+        None => Output::Value(ok),
+    };
+    let (returns, respond, output_type) = match &output {
+        Output::Object(wrapper) => (
+            wrapper.clone(),
+            quote!(::core::result::Result::Ok(#wrapper(value))),
+            None,
         ),
-        None => (returned, quote!(#to_js(&#ident(#(#passed),*)))),
+        Output::Value(ty) if !codec && native_output(ty) => (
+            quote!(#ty),
+            quote!(::core::result::Result::Ok(value)),
+            Some((*ty).clone()),
+        ),
+        Output::Value(ty) => (js_value.clone(), quote!(#to_js(&value)), Some((*ty).clone())),
     };
-    let vis = &function.vis;
-    let describe = format_ident!("{}_rescript", ident);
-    let shim = format_ident!("{}_wasm", ident);
-    let docs = docs(&function);
-    let positions = 0..names.len();
-    let input_identity: Vec<_> = decoded
-        .iter()
-        .map(|ty| {
-            if args.codec {
-                quote!(false)
-            } else {
-                quote!(<#ty as ::rescript_rs::spice::Wasm>::input_identity())
+    let called = call(passed);
+    let body = if fallible {
+        quote! {
+            #(#decode)*
+
+            match #called {
+                ::core::result::Result::Ok(value) => #respond,
+                ::core::result::Result::Err(error) => {
+                    ::core::result::Result::Err(::rescript_rs::wasm::error(&error))
+                }
             }
-        })
-        .collect();
-    let output_identity = if args.codec {
-        quote!(false)
+        }
     } else {
-        quote!(<#output as ::rescript_rs::spice::Wasm>::output_identity())
+        quote! {
+            #(#decode)*
+
+            let value = #called;
+            #respond
+        }
     };
+    let output_boundary = match output_type {
+        // The class renders the object's type, `t`.
+        None => quote! {
+            ::rescript_rs::spice::BoundaryType { ty: ::std::string::String::new(), identity: true }
+        },
+        Some(ty) => {
+            let identity = if codec {
+                quote!(false)
+            } else if native_output(&ty) {
+                quote!(true)
+            } else {
+                quote!(<#ty as ::rescript_rs::spice::Wasm>::output_identity())
+            };
+
+            quote! {
+                ::rescript_rs::spice::BoundaryType {
+                    ty: <#ty as ::rescript_rs::spice::Spice>::rescript_type(),
+                    identity: #identity,
+                }
+            }
+        }
+    };
+    let docs = docs(attrs);
+    let describe = quote! {
+        ::rescript_rs::spice::Function {
+            name: #name,
+            js_name: #js_name,
+            docs: &[#(#docs),*],
+            args: ::std::vec![#(#boundary),*],
+            output: #output_boundary,
+        }
+    };
+
+    Ok(Bound {
+        describe,
+        params,
+        returns: quote!(::core::result::Result<#returns, #js_value>),
+        body,
+    })
+}
+
+pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStream> {
+    let args: Args = syn::parse2(args)?;
+
+    match syn::parse2::<Item>(item)? {
+        Item::Fn(function) => function_attribute(args, function),
+        Item::Impl(block) => class_attribute(args, block),
+        other => syn_err_spanned!(other; "#[rescript_rs::wasm] goes on a function or an impl block"),
+    }
+}
+
+fn function_attribute(args: Args, function: ItemFn) -> Result<TokenStream> {
+    let signature = &function.sig;
+
+    if let Some(FnArg::Receiver(receiver)) = signature.inputs.first() {
+        syn_err_spanned!(receiver; "a method is bound by #[rescript_rs::wasm] on its impl block");
+    }
+
+    let ident = &signature.ident;
+    let name = args
+        .name
+        .map_or_else(|| camel_case(&ident.to_string()), |name| name.value());
+    let js_name = args
+        .js_name
+        .map_or_else(|| name.clone(), |name| name.value());
+    let Bound {
+        describe,
+        params,
+        returns,
+        body,
+    } = bound(
+        signature,
+        &function.attrs,
+        args.codec,
+        name,
+        js_name.clone(),
+        |passed| quote!(#ident(#(#passed),*)),
+        None,
+    )?;
+    let vis = &function.vis;
+    let describe_fn = format_ident!("{}_rescript", ident);
+    let shim = format_ident!("{}_wasm", ident);
 
     Ok(quote! {
         #function
@@ -226,34 +385,201 @@ pub(crate) fn attribute(args: TokenStream, item: TokenStream) -> Result<TokenStr
         /// How ReScript calls the function: add it to a
         /// `rescript_rs::spice::Module` with `function`.
         #[doc(hidden)]
-        #vis fn #describe() -> ::rescript_rs::spice::Function {
-            ::rescript_rs::spice::Function {
+        #vis fn #describe_fn() -> ::rescript_rs::spice::Function {
+            #describe
+        }
+
+        ::rescript_rs::wasm_items! {
+            #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
+                js_name = #js_name,
+                wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
+            )]
+            #[doc(hidden)]
+            #vis fn #shim(#(#params),*) -> #returns {
+                #body
+            }
+        }
+    })
+}
+
+/// A bound method of the impl block: its wrapper method and description.
+struct Member {
+    describe: TokenStream,
+    export: TokenStream,
+}
+
+fn class_attribute(args: Args, block: ItemImpl) -> Result<TokenStream> {
+    if let Some((_, path, _)) = &block.trait_ {
+        syn_err_spanned!(path; "#[rescript_rs::wasm] binds an inherent impl block, not a trait's");
+    }
+    if !block.generics.params.is_empty() {
+        syn_err_spanned!(&block.generics; "a class called from ReScript cannot be generic");
+    }
+
+    let Type::Path(self_ty) = &*block.self_ty else {
+        syn_err_spanned!(&block.self_ty; "#[rescript_rs::wasm] binds an impl block of a named type");
+    };
+    let Some(owner) = self_ty.path.get_ident().cloned() else {
+        syn_err_spanned!(self_ty; "name the type without a path or type arguments");
+    };
+    let name = args
+        .name
+        .map_or_else(|| owner.to_string(), |name| name.value());
+    let js_name = args
+        .js_name
+        .map_or_else(|| name.clone(), |name| name.value());
+    let wrapper = format_ident!("{}Wasm", owner);
+    let mut constructor: Option<Member> = None;
+    let mut methods = vec![];
+
+    for item in &block.items {
+        let ImplItem::Fn(method) = item else {
+            continue;
+        };
+        if !matches!(method.vis, Visibility::Public(_)) {
+            continue;
+        }
+
+        let member = member(&owner, &wrapper, method, args.codec, &js_name)?;
+
+        if method.sig.receiver().is_some() {
+            methods.push(member);
+        } else if constructor.is_some() {
+            syn_err_spanned!(&method.sig; "a class has one constructor: make the other function private or free");
+        } else {
+            constructor = Some(member);
+        }
+    }
+
+    let Some(constructor) = constructor else {
+        syn_err_spanned!(&block.self_ty; "a class needs a constructor: a pub function returning Self");
+    };
+    let docs = docs(&block.attrs);
+    let describe_fn = format_ident!("{}_rescript", snake_case(&owner.to_string()));
+    let constructor_describe = &constructor.describe;
+    let constructor_export = &constructor.export;
+    let method_describes = methods.iter().map(|method| &method.describe);
+    let method_exports = methods.iter().map(|method| &method.export);
+
+    Ok(quote! {
+        #block
+
+        /// How ReScript constructs the class and calls its methods: add it
+        /// to a `rescript_rs::spice::Module` with `class`.
+        #[doc(hidden)]
+        pub fn #describe_fn() -> ::rescript_rs::spice::Class {
+            ::rescript_rs::spice::Class {
                 name: #name,
                 js_name: #js_name,
                 docs: &[#(#docs),*],
-                args: ::std::vec![
-                    #(::rescript_rs::spice::BoundaryType {
-                        ty: <#decoded as ::rescript_rs::spice::Spice>::rescript_type(),
-                        identity: #input_identity,
-                    }),*
-                ],
-                output: ::rescript_rs::spice::BoundaryType {
-                    ty: <#output as ::rescript_rs::spice::Spice>::rescript_type(),
-                    identity: #output_identity,
-                },
+                constructor: #constructor_describe,
+                methods: ::std::vec![#(#method_describes),*],
             }
         }
 
-        ::rescript_rs::wasm_shim! {
-            #js_name
+        ::rescript_rs::wasm_items! {
+            /// The JavaScript class: re-export it from the crate that builds
+            /// the wasm module so the linker keeps it.
+            #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
+                js_name = #js_name,
+                wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
+            )]
             #[doc(hidden)]
-            #vis fn #shim(
-                #(#names: ::rescript_rs::wasm::JsValue),*
-            ) -> ::core::result::Result<::rescript_rs::wasm::JsValue, ::rescript_rs::wasm::JsValue> {
-                #(let #names = #from_js::<#decoded>(&#names, #positions)?;)*
+            pub struct #wrapper(#owner);
 
-                #respond
+            #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
+                js_class = #js_name,
+                wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
+            )]
+            impl #wrapper {
+                #constructor_export
+                #(#method_exports)*
             }
         }
+    })
+}
+
+fn member(
+    owner: &Ident,
+    wrapper: &Ident,
+    method: &ImplItemFn,
+    codec: bool,
+    class: &str,
+) -> Result<Member> {
+    let signature = &method.sig;
+    let ident = &signature.ident;
+    let returned = match &signature.output {
+        ReturnType::Default => None,
+        ReturnType::Type(_, ty) => Some(fallible(ty).unwrap_or(ty)),
+    };
+    let returns_self = returned.is_some_and(|ty| is_self(ty, owner));
+
+    let Some(receiver) = signature.receiver() else {
+        if !returns_self {
+            syn_err_spanned!(signature; "a function without self is the constructor and returns Self: make it a free #[rescript_rs::wasm] function");
+        }
+
+        let Bound {
+            describe,
+            params,
+            returns,
+            body,
+        } = bound(
+            signature,
+            &method.attrs,
+            codec,
+            "make".into(),
+            class.into(),
+            |passed| quote!(#owner::#ident(#(#passed),*)),
+            Some(quote!(#wrapper)),
+        )?;
+
+        return Ok(Member {
+            describe,
+            export: quote! {
+                #[wasm_bindgen(constructor)]
+                pub fn #ident(#(#params),*) -> #returns {
+                    #body
+                }
+            },
+        });
+    };
+
+    if receiver.reference.is_none() || receiver.colon_token.is_some() {
+        syn_err_spanned!(receiver; "a method called from ReScript takes &self or &mut self");
+    }
+    if returns_self {
+        syn_err_spanned!(signature; "only the constructor returns Self");
+    }
+
+    let name = camel_case(&ident.to_string());
+    let Bound {
+        describe,
+        params,
+        returns,
+        body,
+    } = bound(
+        signature,
+        &method.attrs,
+        codec,
+        name.clone(),
+        name.clone(),
+        |passed| quote!(self.0.#ident(#(#passed),*)),
+        None,
+    )?;
+    let receiver = if receiver.mutability.is_some() {
+        quote!(&mut self)
+    } else {
+        quote!(&self)
+    };
+
+    Ok(Member {
+        describe,
+        export: quote! {
+            #[wasm_bindgen(js_name = #name)]
+            pub fn #ident(#receiver, #(#params),*) -> #returns {
+                #body
+            }
+        },
     })
 }

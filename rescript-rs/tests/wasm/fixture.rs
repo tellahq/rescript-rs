@@ -116,3 +116,91 @@ pub enum Format {
 pub fn echo_format(format: Format) -> Format {
     format
 }
+
+/// serde writes an absent `controls` as `null`, which ReScript's `None`
+/// (`undefined`) is not: only a curve going into Rust crosses as it is.
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, wasm, module = "Geometry")]
+#[serde(rename_all = "camelCase")]
+pub struct Curve {
+    pub name: String,
+    pub controls: Option<Vec<f64>>,
+}
+
+#[rescript_rs::wasm]
+pub fn echo_curve(curve: Curve) -> Curve {
+    curve
+}
+
+/// Sizes added up as they come.
+pub struct Tally {
+    label: String,
+    sizes: Vec<Size>,
+}
+
+/// Sizes added up as they come.
+#[rescript_rs::wasm(js_name = "GeometryTally")]
+impl Tally {
+    /// A tally of `sizes` under `label`, which is not empty.
+    pub fn new(sizes: &[Size], label: &str) -> Result<Self, String> {
+        if label.is_empty() {
+            return Err("a tally needs a label".into());
+        }
+
+        Ok(Self {
+            label: label.into(),
+            sizes: sizes.to_vec(),
+        })
+    }
+
+    pub fn add(&mut self, size: Size) {
+        self.sizes.push(size);
+    }
+
+    /// The area of every size, times `scale` squared.
+    pub fn area(&self, scale: f64) -> f64 {
+        self.sizes.iter().map(|size| size.width * size.height).sum::<f64>() * scale * scale
+    }
+
+    pub fn count(&self) -> i32 {
+        self.sizes.len() as i32
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sizes.is_empty()
+    }
+
+    pub fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    pub fn largest(&self) -> Option<Size> {
+        self.sizes
+            .iter()
+            .max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
+            .cloned()
+    }
+
+    pub fn scaled(&self, scale: f64) -> Vec<Size> {
+        self.sizes
+            .iter()
+            .map(|size| Size {
+                width: size.width * scale,
+                height: size.height * scale,
+                label: Some(self.label.clone()),
+            })
+            .collect()
+    }
+
+    /// Not bound: only pub functions are.
+    fn total_width(&self) -> f64 {
+        self.sizes.iter().map(|size| size.width).sum()
+    }
+
+    pub fn widest(&self) -> Result<f64, String> {
+        match self.total_width() {
+            0.0 => Err("no sizes".into()),
+            _ => Ok(self.sizes.iter().map(|size| size.width).fold(0.0, f64::max)),
+        }
+    }
+}
