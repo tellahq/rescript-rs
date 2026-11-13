@@ -345,13 +345,17 @@ impl<T: Wasm> Wasm for Vec<T> {
         T::output_identity()
     }
 }
-/// Going into Rust, ReScript's `None` is `undefined`, which serde reads as
-/// `None`, unless the value inside can itself be null. Coming back, serde
-/// writes `null`.
+/// ReScript's `None` is `undefined`: serde reads it as `None` going into
+/// Rust, and a `None` that reaches ReScript as it is is written as
+/// `undefined` coming back. Not where the value inside can itself be null:
+/// ReScript tells `Some(null)` from `None`, serde does not.
 impl<T: Wasm> Wasm for Option<T> {
     const NULLABLE: bool = true;
     fn input_identity() -> bool {
         !T::NULLABLE && T::input_identity()
+    }
+    fn output_identity() -> bool {
+        !T::NULLABLE && T::output_identity()
     }
 }
 impl<T: Wasm> Wasm for Box<T> {

@@ -39,7 +39,8 @@ fn a_function_is_bound_with_its_own_types() {
             identity: true
         }
     );
-    assert!(!<Option<String>>::output_identity());
+    assert!(<Option<String>>::output_identity());
+    assert!(!<Option<Option<String>>>::output_identity());
     assert!(!scored_rescript().args[1].identity);
 }
 
@@ -52,6 +53,7 @@ fn only_a_decoded_result_is_a_result() {
             .function("./geometry.js", unit_size_rescript())
             .function("./geometry.js", label_or_rescript())
             .function("./geometry.js", echo_optional_rescript())
+            .function("./geometry.js", find_stored_rescript())
             .render(),
         "@module(\"./geometry.js\")
 external unitSize: unit => size = \"unitSize\"
@@ -61,13 +63,20 @@ external unitSize: unit => size = \"unitSize\"
 @module(\"./geometry.js\")
 external labelOr: (option<string>, string) => string = \"labelOr\"
 
-module EchoOptional = {
-  @module(\"./geometry.js\")
-  external wasm: option<string> => JSON.t = \"echoOptional\"
+// A standalone option crosses as it is both ways: ReScript's `None` is
+// `undefined`, which serde reads as `None`, and a `None` coming back is
+// written as `undefined`.
+@module(\"./geometry.js\")
+external echoOptional: option<string> => option<string> = \"echoOptional\"
 
-  let call = arg0 => wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
+// What a Spice decoder reads keeps JSON's `null` for `None`.
+module FindStored = {
+  @module(\"./geometry.js\")
+  external wasm: int => JSON.t = \"findStored\"
+
+  let call = arg0 => wasm(arg0)->Spice.optionFromJson(stored_decode, _)
 }
-let echoOptional = EchoOptional.call
+let findStored = FindStored.call
 "
     );
 }
@@ -101,15 +110,15 @@ fn a_string_enum_is_an_ordinary_variant() {
     assert_eq!(function.output, boundary);
 }
 
-/// A layout crosses without a codec in each direction it is equal in:
-/// ReScript's None is `undefined`, which serde reads as None, but serde
-/// writes a field it does not omit as `null`.
+/// An option field serde does not omit crosses without a codec both ways:
+/// ReScript's None is `undefined`, which serde reads as None and Rust
+/// writes for it.
 #[test]
-fn an_option_field_serde_writes_as_null_crosses_only_into_rust() {
+fn an_option_field_serde_does_not_omit_crosses_as_it_is() {
     use rescript_rs::spice::{BoundaryType, Wasm};
 
     assert!(Curve::input_identity());
-    assert!(!Curve::output_identity());
+    assert!(Curve::output_identity());
 
     let function = echo_curve_rescript();
 
@@ -122,7 +131,7 @@ fn an_option_field_serde_writes_as_null_crosses_only_into_rust() {
             }],
             BoundaryType {
                 ty: "Geometry.curve".into(),
-                identity: false
+                identity: true
             }
         )
     );
@@ -193,7 +202,7 @@ fn a_class_is_bound_with_its_constructor_and_methods() {
             ("count", "count", vec![], "int", true),
             ("isEmpty", "isEmpty", vec![], "bool", true),
             ("label", "label", vec![], "string", true),
-            ("largest", "largest", vec![], "option<Geometry.size>", false),
+            ("largest", "largest", vec![], "option<Geometry.size>", true),
             (
                 "scaled",
                 "scaled",
@@ -218,7 +227,7 @@ fn a_class_cannot_take_its_module_s_own_t() {
 }
 
 /// An async function is described as one; `f32`, `u32` and tuples cross
-/// without a codec, and a tuple holding an `Option` is decoded coming back.
+/// without a codec, a tuple holding an `Option` included.
 #[test]
 fn an_async_function_and_f32_u32_tuple_layouts_are_bound() {
     use rescript_rs::spice::{BoundaryType, Wasm};
@@ -243,9 +252,9 @@ fn an_async_function_and_f32_u32_tuple_layouts_are_bound() {
     );
     assert_eq!(
         (positions.asynchronous, positions.output),
-        (true, boundary("Geometry.positions", false))
+        (true, boundary("Geometry.positions", true))
     );
-    assert!(Positions::input_identity());
+    assert!(Positions::input_identity() && Positions::output_identity());
     assert!(!fitted_rescript().asynchronous);
 }
 
@@ -398,12 +407,46 @@ mod exports {
                 .as_deref(),
             Some("0 is no scale")
         );
+        let positions = positions_wasm(js(r#"["Paperback"]"#), 2).await.unwrap();
+        let positions = Array::from(&Reflect::get(&positions, &"positions".into()).unwrap());
+        let (first, second) = (
+            Array::from(&positions.get(0)),
+            Array::from(&positions.get(1)),
+        );
+
+        assert_eq!(first.get(1).as_string().as_deref(), Some("Paperback"));
+        assert_eq!((second.length(), second.get(1)), (2, JsValue::UNDEFINED));
+    }
+
+    /// A `None` that reaches ReScript as it is is `undefined`, ReScript's
+    /// own, in a field too (a property that is there); one a Spice decoder
+    /// reads is JSON's `null`.
+    #[wasm_bindgen_test]
+    fn a_returned_none_is_undefined_unless_a_decoder_reads_it() {
         assert_eq!(
-            serde_json::from_str::<Value>(&json(
-                &positions_wasm(js(r#"["Paperback"]"#), 2).await.unwrap()
-            ))
-            .unwrap(),
-            serde_json::json!({"positions": [[0, "Paperback"], [1, null]]})
+            echo_optional_wasm(JsValue::UNDEFINED),
+            Ok(JsValue::UNDEFINED)
+        );
+        assert_eq!(
+            echo_optional_wasm("value".into())
+                .unwrap()
+                .as_string()
+                .as_deref(),
+            Some("value")
+        );
+
+        let curve = echo_curve_wasm(js(r#"{"name": "ease"}"#)).unwrap();
+
+        assert!(Reflect::has(&curve, &"controls".into()).unwrap());
+        assert_eq!(
+            Reflect::get(&curve, &"controls".into()),
+            Ok(JsValue::UNDEFINED)
+        );
+
+        assert_eq!(find_stored_wasm(0), Ok(JsValue::NULL));
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&find_stored_wasm(2).unwrap())).unwrap(),
+            serde_json::json!({"type": "Shelf", "count": 2})
         );
     }
 
@@ -475,7 +518,7 @@ mod exports {
 
         assert_eq!(
             serde_json::from_str::<Value>(&json(&echo_curve_wasm(curve).unwrap())).unwrap(),
-            serde_json::json!({"name": "ease", "controls": null})
+            serde_json::json!({"name": "ease"})
         );
     }
 

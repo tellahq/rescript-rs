@@ -15,7 +15,7 @@ use js_sys::{Array, Object, Reflect};
 pub use wasm_bindgen::{self, JsValue};
 pub use wasm_bindgen_futures;
 
-mod shortest;
+mod layout;
 
 use crate::spice::{js_number, Failure, Map, Plain, Spice, Value};
 
@@ -128,13 +128,33 @@ pub fn from_serde<T: crate::spice::Wasm>(value: &JsValue, position: usize) -> Re
     serde_wasm_bindgen::from_value(value.clone()).map_err(|error| refused(&error))
 }
 
-/// An `f32` is written as the `f64` its shortest decimal reads as.
+/// An `f32` is written as the `f64` its shortest decimal reads as. A value
+/// that reaches ReScript as it is has its `None`s written as `undefined`,
+/// ReScript's own; one a Spice decoder reads keeps JSON's `null`.
 pub fn to_serde<T: crate::spice::Wasm>(value: &T) -> Result<JsValue, JsValue> {
     value
-        .serialize(shortest::Shortest(
-            &serde_wasm_bindgen::Serializer::json_compatible(),
-        ))
+        .serialize(layout::Layout {
+            inner: &serde_wasm_bindgen::Serializer::json_compatible(),
+            undefined: crosses_as_it_is::<T>(),
+        })
         .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// `T::output_identity()`, worked out once per type: it walks the type's
+/// fields, and an export may be called every frame.
+fn crosses_as_it_is<T: crate::spice::Wasm>() -> bool {
+    use std::{any::TypeId, cell::RefCell, collections::HashMap};
+
+    thread_local! {
+        static KNOWN: RefCell<HashMap<TypeId, bool>> = RefCell::new(HashMap::new());
+    }
+
+    KNOWN.with(|known| {
+        *known
+            .borrow_mut()
+            .entry(TypeId::of::<T>())
+            .or_insert_with(T::output_identity)
+    })
 }
 
 pub fn codec_result<T: Spice>(value: &T) -> Result<JsValue, JsValue> {

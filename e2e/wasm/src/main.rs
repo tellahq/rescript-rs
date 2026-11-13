@@ -25,6 +25,8 @@ fn main() {
             .class("./wasm/wasm_bridge_e2e.js", tally_rescript())
             .with::<Reading>()
             .function("./wasm/wasm_bridge_e2e.js", readings_rescript())
+            .with::<Stored>()
+            .function("./wasm/wasm_bridge_e2e.js", find_stored_rescript())
             .with::<Positions>()
             .function("./wasm/wasm_bridge_e2e.js", positions_rescript())
             .render()

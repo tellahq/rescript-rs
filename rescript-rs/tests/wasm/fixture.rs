@@ -96,6 +96,9 @@ pub fn echo_shape(shape: Shape) -> Shape {
     shape
 }
 
+/// A standalone option crosses as it is both ways: ReScript's `None` is
+/// `undefined`, which serde reads as `None`, and a `None` coming back is
+/// written as `undefined`.
 #[rescript_rs::wasm]
 pub fn echo_optional(value: Option<String>) -> Option<String> {
     value
@@ -307,6 +310,12 @@ impl rescript_rs::spice::Wasm for Stored {
 #[rescript_rs::wasm]
 pub fn echo_stored(stored: Stored) -> Stored {
     stored
+}
+
+/// What a Spice decoder reads keeps JSON's `null` for `None`.
+#[rescript_rs::wasm]
+pub fn find_stored(count: i32) -> Option<Stored> {
+    (count > 0).then_some(Stored::Shelf { count })
 }
 
 /// A `u32` is read by serde, not passed as wasm-bindgen's own number, which
