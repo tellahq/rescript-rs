@@ -109,14 +109,18 @@ pub fn label_or(label: Option<String>, fallback: &str) -> String {
 }
 
 /// A payload-free enum is a string on both sides: serde's default name, or
-/// the renamed one.
+/// the renamed one. The names serde only reads (an alias, any other name)
+/// leave both as they are.
 #[derive(ReScript, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[rescript(codec, wasm, module = "Geometry")]
 pub enum Format {
+    #[serde(alias = "hardback")]
     Hardcover,
     Paperback,
     #[serde(rename = "e-book")]
     Ebook,
+    #[serde(other)]
+    Unlisted,
 }
 
 #[rescript_rs::wasm]

@@ -2379,8 +2379,15 @@ fn derive_wasm(
                 if attr.alias != serde_alias {
                     return Err(Error::new(variant.span(), "use #[serde(rename = …)] to align the native serde and ReScript constructor names"));
                 }
+                // Serde writes only a unit variant's own name, and a ReScript
+                // value is always one, so the names serde also reads (its
+                // aliases, and any other for `other`) change neither layout.
+                let unit = matches!(variant.fields, Fields::Unit);
                 for meta in serde_metas(&variant.attrs)? {
-                    if !meta.path().is_ident("rename") {
+                    let read_only = unit
+                        && (meta.path().is_ident("alias")
+                            || meta.path().is_ident("other"));
+                    if !meta.path().is_ident("rename") && !read_only {
                         return Err(Error::new(
                             meta.span(),
                             "this serde variant attribute needs the codec bridge",
@@ -2388,11 +2395,10 @@ fn derive_wasm(
                     }
                 }
                 if attr.untagged
-                    || attr.other
-                    || !attr.aliases.is_empty()
+                    || (!unit && (attr.other || !attr.aliases.is_empty()))
                     || matches!(variant.fields, Fields::Unnamed(_))
                 {
-                    return Err(Error::new(variant.span(), "wasm enums need unit or named-field variants without untagged/other/aliases"));
+                    return Err(Error::new(variant.span(), "wasm enums need unit or named-field variants, without untagged, and other/aliases only on unit variants"));
                 }
                 if container.tag.is_none() && !matches!(variant.fields, Fields::Unit) {
                     return Err(Error::new(variant.span(), "a wasm enum with fields needs #[serde(tag = \"type\")]: only an internally tagged variant has the same layout in ReScript"));

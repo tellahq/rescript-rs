@@ -80,11 +80,16 @@ fn a_string_enum_is_an_ordinary_variant() {
 
     assert_eq!(
         Format::declaration(),
-        "// A payload-free enum is a string on both sides: serde's default name, or\n// the renamed one.\n@spice.serde\ntype format =\n  | Hardcover\n  | Paperback\n  | @as(\"e-book\") Ebook"
+        "// A payload-free enum is a string on both sides: serde's default name, or\n// the renamed one. The names serde only reads (an alias, any other name)\n// leave both as they are.\n@spice.serde\ntype format =\n  | @spice.alias(\"hardback\") Hardcover\n  | Paperback\n  | @as(\"e-book\") Ebook\n  | @spice.other Unlisted"
     );
     assert_eq!(
-        serde_json::to_string(&[Format::Hardcover, Format::Ebook]).unwrap(),
-        r#"["Hardcover","e-book"]"#
+        serde_json::to_string(&[Format::Hardcover, Format::Ebook, Format::Unlisted])
+            .unwrap(),
+        r#"["Hardcover","e-book","Unlisted"]"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Vec<Format>>(r#"["hardback","pamphlet"]"#).unwrap(),
+        [Format::Hardcover, Format::Unlisted]
     );
 
     let boundary = BoundaryType {

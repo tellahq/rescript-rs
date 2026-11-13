@@ -143,7 +143,10 @@ The declaration uses `@tag("type")`, `@as("unbounded") Unbounded({})` and
 keeps unit variants as tagged objects, not runtime strings. Renamed record
 fields receive both `@as` and `@spice.key`: runtime and JSON keys match.
 Payload enums must be internally tagged. A payload-free enum needs no tag: it
-is an ordinary variant, the same string on both sides.
+is an ordinary variant, the same string on both sides. A unit variant may
+carry `#[serde(alias = …)]` or `#[serde(other)]`: serde writes only its own
+name and a ReScript value is always one, so neither changes the layout (the
+codec reads them too, as `@spice.alias` and `@spice.other`).
 
 ```rust
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize, rescript_rs::ReScript)]
