@@ -128,9 +128,11 @@ fn docs(attrs: &[Attribute]) -> Vec<String> {
         .collect()
 }
 
-/// `f64`, `i32`, `u32` and `bool` cross as wasm-bindgen's own numbers and
+/// `f64`, `i32` and `bool` cross as wasm-bindgen's own numbers and
 /// booleans, with no `JsValue` and no serde. So does an `Option` of one:
-/// its `None` is `undefined` in both directions, as ReScript's is.
+/// its `None` is `undefined` in both directions, as ReScript's is. A `u32`
+/// does not: wasm-bindgen would wrap a negative ReScript `int` into a large
+/// one, where serde refuses it.
 fn native(ty: &Type) -> bool {
     scalar(ty) || option_inner(ty).is_some_and(scalar)
 }
@@ -147,7 +149,7 @@ fn scalar(ty: &Type) -> bool {
     };
 
     path.qself.is_none()
-        && ["f64", "i32", "u32", "bool"]
+        && ["f64", "i32", "bool"]
             .iter()
             .any(|name| path.path.is_ident(name))
 }

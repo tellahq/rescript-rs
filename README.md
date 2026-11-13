@@ -200,7 +200,8 @@ An `f32` crosses without a codec too. Going into Rust it is the JavaScript
 number rounded to `f32`, as serde reads JSON text of it; coming back it is the
 number its shortest decimal reads as (`0.1`, not serde-wasm-bindgen's exact
 widening `0.10000000149011612`), as JSON text and its Spice codec write it. A
-`u32` is a ReScript `int` (at most `i32::MAX` decodes). A tuple is an array on
+`u32` is a ReScript `int`, read by serde, which refuses a negative one (at most
+`i32::MAX` decodes). A tuple is an array on
 both sides, so it crosses as its items do; one that needs a codec must sit
 inside a named type, since ppx-spice has no codec for a bare tuple.
 
@@ -216,7 +217,7 @@ answers `promise<t>`, and where the result is decoded, `call` decodes it in
 `Promise.thenResolve`. A returned `Err` rejects the promise. Methods cannot be
 async yet.
 
-`f64`, `i32`, `u32` and `bool` arguments and results, and a function returning
+`f64`, `i32` and `bool` arguments and results, and a function returning
 nothing, cross as wasm-bindgen passes them: no `JsValue` and no serde. A
 ReScript `float` is always a number, so nothing is lost by not checking it.
 So does an `Option` of one of them: wasm-bindgen's `None` is `undefined` in

@@ -444,6 +444,13 @@ mod exports {
         }
     }
 
+    #[wasm_bindgen_test]
+    fn a_negative_int_is_no_u32() {
+        assert_eq!(echo_order_wasm(7.into()).unwrap().as_f64(), Some(7.0));
+        assert!(echo_order_wasm((-1).into()).is_err());
+        assert!(echo_order_wasm(1.5.into()).is_err());
+    }
+
     /// A type read as JSON reads what `JSON.stringify` of the value holds.
     #[wasm_bindgen_test]
     fn a_type_read_as_json_reads_its_json() {

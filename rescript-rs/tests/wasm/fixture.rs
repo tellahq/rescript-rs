@@ -308,3 +308,10 @@ impl rescript_rs::spice::Wasm for Stored {
 pub fn echo_stored(stored: Stored) -> Stored {
     stored
 }
+
+/// A `u32` is read by serde, not passed as wasm-bindgen's own number, which
+/// would wrap a negative ReScript `int` into a large one.
+#[rescript_rs::wasm]
+pub fn echo_order(order: u32) -> u32 {
+    order
+}
