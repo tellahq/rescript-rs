@@ -2384,9 +2384,8 @@ fn derive_wasm(
                 // aliases, and any other for `other`) change neither layout.
                 let unit = matches!(variant.fields, Fields::Unit);
                 for meta in serde_metas(&variant.attrs)? {
-                    let read_only = unit
-                        && (meta.path().is_ident("alias")
-                            || meta.path().is_ident("other"));
+                    let read_only =
+                        unit && (meta.path().is_ident("alias") || meta.path().is_ident("other"));
                     if !meta.path().is_ident("rename") && !read_only {
                         return Err(Error::new(
                             meta.span(),

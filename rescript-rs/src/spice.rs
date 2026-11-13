@@ -1117,44 +1117,23 @@ impl Spice for f32 {
     }
 }
 
-/// The `f64` the shortest decimal form of `value` reads as: what JSON text
-/// of an `f32` reads back as in JavaScript.
+/// The `f64` JSON text of `value` reads as in JavaScript: its shortest
+/// decimal, as serde_json writes it (a tie rounds to even, where `Display`
+/// rounds up: `3460691.25` is `3460691.2`).
 pub(crate) fn shortest(value: f32) -> f64 {
-    use std::fmt::Write;
+    // Room for any `f32`'s JSON text (`-1.1754944e-38` is 14).
+    let mut bytes = [0u8; 32];
+    let mut rest = &mut bytes[..];
 
-    /// Room for any `f32`'s shortest decimal (`-1.1754944e-38` is 14).
-    struct Digits {
-        bytes: [u8; 48],
-        len: usize,
-    }
-
-    impl Write for Digits {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            let end = self.len + text.len();
-            let slot = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
-
-            slot.copy_from_slice(text.as_bytes());
-            self.len = end;
-            Ok(())
-        }
-    }
-
-    if !value.is_finite() {
+    if !value.is_finite() || serde_json::to_writer(&mut rest, &value).is_err() {
         return f64::from(value);
     }
+    let len = 32 - rest.len();
 
-    let mut digits = Digits {
-        bytes: [0; 48],
-        len: 0,
-    };
-
-    match write!(digits, "{value}") {
-        Ok(()) => std::str::from_utf8(&digits.bytes[..digits.len])
-            .ok()
-            .and_then(|text| text.parse().ok())
-            .unwrap_or(f64::from(value)),
-        Err(_) => f64::from(value),
-    }
+    std::str::from_utf8(&bytes[..len])
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(f64::from(value))
 }
 
 impl Spice for bool {

@@ -83,8 +83,7 @@ fn a_string_enum_is_an_ordinary_variant() {
         "// A payload-free enum is a string on both sides: serde's default name, or\n// the renamed one. The names serde only reads (an alias, any other name)\n// leave both as they are.\n@spice.serde\ntype format =\n  | @spice.alias(\"hardback\") Hardcover\n  | Paperback\n  | @as(\"e-book\") Ebook\n  | @spice.other Unlisted"
     );
     assert_eq!(
-        serde_json::to_string(&[Format::Hardcover, Format::Ebook, Format::Unlisted])
-            .unwrap(),
+        serde_json::to_string(&[Format::Hardcover, Format::Ebook, Format::Unlisted]).unwrap(),
         r#"["Hardcover","e-book","Unlisted"]"#
     );
     assert_eq!(
@@ -338,7 +337,8 @@ mod exports {
 
         assert_eq!(echoed("Paperback").as_deref(), Some("Paperback"));
         assert_eq!(echoed("e-book").as_deref(), Some("e-book"));
-        assert!(echo_format_wasm("Ebook".into()).is_err());
+        assert_eq!(echoed("Ebook").as_deref(), Some("Unlisted"));
+        assert!(echo_format_wasm(1.into()).is_err());
     }
 
     #[wasm_bindgen_test]
@@ -405,6 +405,43 @@ mod exports {
             .unwrap(),
             serde_json::json!({"positions": [[0, "Paperback"], [1, null]]})
         );
+    }
+
+    /// An f32 reaches JavaScript as the number JSON text of it parses to,
+    /// and a JavaScript number reaches Rust as the f32 serde reads from
+    /// `JSON.stringify` of it: over every exponent, subnormals included.
+    #[wasm_bindgen_test]
+    fn an_f32_crosses_as_its_json_text_does() {
+        use rescript_rs::wasm::{from_serde, to_serde};
+
+        let mut state = 0x2545_f491_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+
+        for _ in 0..20_000 {
+            let value = f32::from_bits(next());
+            if !value.is_finite() {
+                continue;
+            }
+            let text = serde_json::to_string(&value).unwrap();
+            let returned = to_serde(&value).unwrap().as_f64().unwrap();
+
+            assert_eq!(
+                returned.to_bits(),
+                JSON::parse(&text).unwrap().as_f64().unwrap().to_bits(),
+                "{text}"
+            );
+
+            let number = f64::from(value) * 1.000_000_1;
+            let read: f32 = from_serde(&JsValue::from(number), 0).unwrap();
+            let expected: f32 = serde_json::from_str(&json(&JsValue::from(number))).unwrap();
+
+            assert_eq!(read.to_bits(), expected.to_bits(), "{number}");
+        }
     }
 
     #[wasm_bindgen_test]
