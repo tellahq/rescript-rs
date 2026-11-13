@@ -135,26 +135,9 @@ pub fn to_serde<T: crate::spice::Wasm>(value: &T) -> Result<JsValue, JsValue> {
     value
         .serialize(layout::Layout {
             inner: &serde_wasm_bindgen::Serializer::json_compatible(),
-            undefined: crosses_as_it_is::<T>(),
+            undefined: T::output_identity(),
         })
         .map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
-/// `T::output_identity()`, worked out once per type: it walks the type's
-/// fields, and an export may be called every frame.
-fn crosses_as_it_is<T: crate::spice::Wasm>() -> bool {
-    use std::{any::TypeId, cell::RefCell, collections::HashMap};
-
-    thread_local! {
-        static KNOWN: RefCell<HashMap<TypeId, bool>> = RefCell::new(HashMap::new());
-    }
-
-    KNOWN.with(|known| {
-        *known
-            .borrow_mut()
-            .entry(TypeId::of::<T>())
-            .or_insert_with(T::output_identity)
-    })
 }
 
 pub fn codec_result<T: Spice>(value: &T) -> Result<JsValue, JsValue> {
