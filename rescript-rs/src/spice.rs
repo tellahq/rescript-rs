@@ -307,7 +307,17 @@ macro_rules! wasm_scalar {
         }
     )*};
 }
-wasm_scalar!(String, bool, i32, f64);
+wasm_scalar!(String, bool, i32, u32, f64);
+/// Written as the `f64` its shortest decimal reads as (`0.1`, not
+/// `0.10000000149011612`), as JSON text of it would be.
+impl Wasm for f32 {
+    fn input_identity() -> bool {
+        true
+    }
+    fn output_identity() -> bool {
+        true
+    }
+}
 impl Wasm for Value {
     const NULLABLE: bool = true;
     fn input_identity() -> bool {
@@ -328,8 +338,14 @@ impl<T: Wasm> Wasm for Vec<T> {
         T::output_identity()
     }
 }
+/// Going into Rust, ReScript's `None` is `undefined`, which serde reads as
+/// `None`, unless the value inside can itself be null. Coming back, serde
+/// writes `null`.
 impl<T: Wasm> Wasm for Option<T> {
     const NULLABLE: bool = true;
+    fn input_identity() -> bool {
+        !T::NULLABLE && T::input_identity()
+    }
 }
 impl<T: Wasm> Wasm for Box<T> {
     const NULLABLE: bool = T::NULLABLE;
@@ -356,6 +372,8 @@ pub struct Function {
     pub docs: &'static [&'static str],
     pub args: Vec<BoundaryType>,
     pub output: BoundaryType,
+    /// An `async fn`: the export answers a `promise` of its output.
+    pub asynchronous: bool,
 }
 
 impl Function {
@@ -444,6 +462,7 @@ impl Class {
 /// the external, `wasm`, and `call`, which encodes the arguments and
 /// decodes what comes back. Only decoding can fail, so only a decoded
 /// result is a `result`. A method's external also takes the object, `t`.
+/// An async function answers a `promise` of all that.
 fn binding(function: &Function, external: &str, method: bool) -> String {
     let args: Vec<String> = (0..function.args.len())
         .map(|i| format!("arg{i}"))
@@ -460,6 +479,10 @@ fn binding(function: &Function, external: &str, method: bool) -> String {
         .into_iter()
         .chain(function.args.iter().map(ty))
         .collect();
+    let promised = |ty: String| match function.asynchronous {
+        true => format!("promise<{ty}>"),
+        false => ty,
+    };
     let signature = format!(
         "{} => {} = {}",
         match types.as_slice() {
@@ -467,7 +490,7 @@ fn binding(function: &Function, external: &str, method: bool) -> String {
             [one] => one.clone(),
             many => format!("({})", many.join(", ")),
         },
-        ty(&function.output),
+        promised(ty(&function.output)),
         rescript_string(function.js_name),
     );
     let mut out: String = function
@@ -506,10 +529,13 @@ fn binding(function: &Function, external: &str, method: bool) -> String {
         })
         .collect();
     let call = format!("wasm({})", passed.join(", "));
-    let call = if function.output.identity {
-        call
-    } else {
-        ValueCodec::of(&function.output.ty).decode(&call)
+    let call = match (function.output.identity, function.asynchronous) {
+        (true, _) => call,
+        (false, false) => ValueCodec::of(&function.output.ty).decode(&call),
+        (false, true) => format!(
+            "{call}->Promise.thenResolve(json => {})",
+            ValueCodec::of(&function.output.ty).decode("json")
+        ),
     };
 
     out.push_str(&format!(
@@ -1012,6 +1038,35 @@ impl Spice for i32 {
     }
 }
 
+/// A ReScript `int` that is never negative, e.g. an index or an order.
+impl Spice for u32 {
+    fn rescript_type() -> String {
+        "int".into()
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![0, 7]
+    }
+
+    fn decode<H: Host>(json: &Value) -> Result<Self> {
+        match H::view(json) {
+            View::Number(n) if n.floor() == n && (0.0..=f64::from(i32::MAX)).contains(&n) => {
+                Ok(n as u32)
+            }
+            View::Number(_) => Err(Failure::error("Not a non-negative int", json)),
+            _ => Err(Failure::error("Not a number", json)),
+        }
+    }
+
+    fn encode<H: Host>(&self) -> Value {
+        H::number(f64::from(*self))
+    }
+
+    fn rescript_value(&self) -> Option<String> {
+        Some(self.to_string())
+    }
+}
+
 impl Spice for f64 {
     fn rescript_type() -> String {
         "float".into()
@@ -1062,11 +1117,43 @@ impl Spice for f32 {
     }
 }
 
-/// The `f64` the shortest decimal form of `value` reads as.
-fn shortest(value: f32) -> f64 {
-    match value.is_finite() {
-        true => value.to_string().parse().unwrap_or(f64::from(value)),
-        false => f64::from(value),
+/// The `f64` the shortest decimal form of `value` reads as: what JSON text
+/// of an `f32` reads back as in JavaScript.
+pub(crate) fn shortest(value: f32) -> f64 {
+    use std::fmt::Write;
+
+    /// Room for any `f32`'s shortest decimal (`-1.1754944e-38` is 14).
+    struct Digits {
+        bytes: [u8; 48],
+        len: usize,
+    }
+
+    impl Write for Digits {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let end = self.len + text.len();
+            let slot = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+
+            slot.copy_from_slice(text.as_bytes());
+            self.len = end;
+            Ok(())
+        }
+    }
+
+    if !value.is_finite() {
+        return f64::from(value);
+    }
+
+    let mut digits = Digits {
+        bytes: [0; 48],
+        len: 0,
+    };
+
+    match write!(digits, "{value}") {
+        Ok(()) => std::str::from_utf8(&digits.bytes[..digits.len])
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(f64::from(value)),
+        Err(_) => f64::from(value),
     }
 }
 
@@ -1451,6 +1538,33 @@ macro_rules! tuples {
 
 /// Tuples of 2 to 16 values, as serde has; the derive rejects a longer one.
 pub const MAX_TUPLE: usize = 16;
+
+/// A ReScript tuple and a serde tuple are both a JavaScript array.
+macro_rules! wasm_tuple {
+    ($($name:ident),+) => {
+        impl<$($name: Wasm),+> Wasm for ($($name,)+) {
+            fn input_identity() -> bool {
+                true $(&& $name::input_identity())+
+            }
+            fn output_identity() -> bool {
+                true $(&& $name::output_identity())+
+            }
+        }
+    };
+}
+
+/// `wasm_tuple!` for every length from the first list's up to both lists'.
+macro_rules! wasm_tuples {
+    ($($name:ident),+;) => {
+        wasm_tuple!($($name),+);
+    };
+    ($($name:ident),+; $next:ident $(, $rest:ident)*) => {
+        wasm_tuple!($($name),+);
+        wasm_tuples!($($name),+, $next; $($rest),*);
+    };
+}
+
+wasm_tuples!(A, B; C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 
 tuples!(A 0, B 1; C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11, M 12, N 13, O 14, P 15);
 

@@ -44,8 +44,7 @@ fn a_function_is_bound_with_its_own_types() {
 }
 
 /// A binding is a `result` only where it decodes what comes back, which is
-/// all that can fail: with no codec it is the external itself, and with
-/// only its arguments encoded it answers the value.
+/// all that can fail: with no codec it is the external itself.
 #[test]
 fn only_a_decoded_result_is_a_result() {
     assert_eq!(
@@ -57,29 +56,16 @@ fn only_a_decoded_result_is_a_result() {
         "@module(\"./geometry.js\")
 external unitSize: unit => size = \"unitSize\"
 
-// A standalone option is encoded going in (serde reads `null`); the
-// string that comes back needs no decoding, so nothing here can fail.
-module LabelOr = {
-  @module(\"./geometry.js\")
-  external wasm: (JSON.t, string) => string = \"labelOr\"
-
-  let call = (arg0, arg1) => {
-    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
-
-    wasm(arg0, arg1)
-  }
-}
-let labelOr = LabelOr.call
+// A standalone option crosses into Rust as it is (serde reads `undefined`
+// as `None`), and the string that comes back needs no decoding.
+@module(\"./geometry.js\")
+external labelOr: (option<string>, string) => string = \"labelOr\"
 
 module EchoOptional = {
   @module(\"./geometry.js\")
-  external wasm: JSON.t => JSON.t = \"echoOptional\"
+  external wasm: option<string> => JSON.t = \"echoOptional\"
 
-  let call = arg0 => {
-    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
-
-    wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
-  }
+  let call = arg0 => wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
 }
 let echoOptional = EchoOptional.call
 "
@@ -227,6 +213,38 @@ fn a_class_cannot_take_its_module_s_own_t() {
     Module::new("Geometry").class("./geometry.js", class);
 }
 
+/// An async function is described as one; `f32`, `u32` and tuples cross
+/// without a codec, and a tuple holding an `Option` is decoded coming back.
+#[test]
+fn an_async_function_and_f32_u32_tuple_layouts_are_bound() {
+    use rescript_rs::spice::{BoundaryType, Wasm};
+
+    let boundary = |ty: &str, identity| BoundaryType {
+        ty: ty.into(),
+        identity,
+    };
+    let readings = readings_rescript();
+    let positions = positions_rescript();
+
+    assert_eq!(
+        (readings.asynchronous, readings.args, readings.output),
+        (
+            true,
+            vec![
+                boundary("array<Geometry.size>", true),
+                boundary("float", true)
+            ],
+            boundary("array<Geometry.reading>", true)
+        )
+    );
+    assert_eq!(
+        (positions.asynchronous, positions.output),
+        (true, boundary("Geometry.positions", false))
+    );
+    assert!(Positions::input_identity());
+    assert!(!fitted_rescript().asynchronous);
+}
+
 #[test]
 fn export_wasm_binding() {
     if let Ok(path) = std::env::var("WASM_TEST_BINDING") {
@@ -252,6 +270,10 @@ fn export_wasm_binding() {
                 .function("./geometry.js", echo_count_rescript())
                 .function("./geometry.js", echo_flag_rescript())
                 .class("./geometry.js", tally_rescript())
+                .with::<Reading>()
+                .function("./geometry.js", readings_rescript())
+                .with::<Positions>()
+                .function("./geometry.js", positions_rescript())
                 .render(),
         )
         .unwrap();
@@ -342,6 +364,41 @@ mod exports {
         assert_eq!(
             thrown(TallyWasm::new(none(), "".into()).map(|_| JsValue::NULL)),
             "a tally needs a label"
+        );
+    }
+
+    /// An `f32` reaches JavaScript as its shortest decimal, as JSON text
+    /// of it would: `0.1`, not `0.10000000149011612`.
+    #[wasm_bindgen_test]
+    async fn an_async_function_answers_its_value_with_f32_as_its_shortest_decimal() {
+        let answered = readings_wasm(
+            js(r#"[{"width": 0.1, "height": 2}, {"width": 3, "height": 4}]"#),
+            1.0.into(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&answered)).unwrap(),
+            serde_json::json!([
+                {"level": 0.1, "order": 0, "at": [0, 2]},
+                {"level": 3, "order": 1, "at": [1, 4]}
+            ])
+        );
+        assert_eq!(
+            readings_wasm(js("[]"), 0.0.into())
+                .await
+                .unwrap_err()
+                .as_string()
+                .as_deref(),
+            Some("0 is no scale")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(
+                &positions_wasm(js(r#"["Paperback"]"#), 2).await.unwrap()
+            ))
+            .unwrap(),
+            serde_json::json!({"positions": [[0, "Paperback"], [1, null]]})
         );
     }
 

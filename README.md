@@ -180,20 +180,33 @@ ReScript's `None` is `undefined`, which serde reads as `None`, so it crosses int
 Rust as it is, but serde writes `None` as `null`, so a value Rust returns is
 decoded. Option fields whose values can themselves be null
 (JSON, unit or another option) are rejected: native serde would lose the
-difference between a present null and an absent field. Standalone options
-(other than a scalar's, below), unit values and recursive layouts
-retain JS codecs where representations differ, but still use native serde in
-Rust. Unknown/custom serde attributes are rejected rather than guessing.
+difference between a present null and an absent field. A standalone option
+crosses into Rust as it is too (serde reads `undefined` as `None`) unless its
+value can itself be null; coming back it is decoded, as are unit values and
+recursive layouts. Where a JS codec remains, Rust still uses native serde. Unknown/custom serde attributes are rejected rather than guessing.
 `#[rescript(serde)]` is the legacy Spice-to-serde adapter and cannot be combined
 with `wasm`; derive `serde::Serialize` and `serde::Deserialize` instead.
 
 `#[rescript_rs::wasm(codec)]` explicitly retains the original JSON-tree bridge
 for legacy/custom codecs. Native serde owns its validation rules and errors;
-it does not reproduce JSON normalization for non-finite floats, f32, defaults or
-tuples. f32 is deliberately not a built-in `Wasm` type. Never bypass decoders for
-arbitrary external JSON. This optimization is confined to the typed WASM boundary.
+it does not reproduce JSON normalization for non-finite floats, defaults or
+tuples. Never bypass decoders for arbitrary external JSON. This optimization is
+confined to the typed WASM boundary.
 
-`f64`, `i32` and `bool` arguments and results, and a function returning
+An `f32` crosses without a codec too. Going into Rust it is the JavaScript
+number rounded to `f32`, as serde reads JSON text of it; coming back it is the
+number its shortest decimal reads as (`0.1`, not serde-wasm-bindgen's exact
+widening `0.10000000149011612`), as JSON text and its Spice codec write it. A
+`u32` is a ReScript `int` (at most `i32::MAX` decodes). A tuple is an array on
+both sides, so it crosses as its items do; one that needs a codec must sit
+inside a named type, since ppx-spice has no codec for a bare tuple.
+
+An `async fn` binds the same way and answers a `promise`: its typed external
+answers `promise<t>`, and where the result is decoded, `call` decodes it in
+`Promise.thenResolve`. A returned `Err` rejects the promise. Methods cannot be
+async yet.
+
+`f64`, `i32`, `u32` and `bool` arguments and results, and a function returning
 nothing, cross as wasm-bindgen passes them: no `JsValue` and no serde. A
 ReScript `float` is always a number, so nothing is lost by not checking it.
 So does an `Option` of one of them: wasm-bindgen's `None` is `undefined` in

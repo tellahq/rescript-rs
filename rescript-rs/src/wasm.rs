@@ -13,6 +13,9 @@
 
 use js_sys::{Array, Object, Reflect};
 pub use wasm_bindgen::{self, JsValue};
+pub use wasm_bindgen_futures;
+
+mod shortest;
 
 use crate::spice::{js_number, Failure, Map, Plain, Spice, Value};
 
@@ -116,9 +119,12 @@ pub fn from_serde<T: crate::spice::Wasm>(value: &JsValue, position: usize) -> Re
         .map_err(|error| JsValue::from_str(&format!("argument {position}: {error}")))
 }
 
+/// An `f32` is written as the `f64` its shortest decimal reads as.
 pub fn to_serde<T: crate::spice::Wasm>(value: &T) -> Result<JsValue, JsValue> {
     value
-        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .serialize(shortest::Shortest(
+            &serde_wasm_bindgen::Serializer::json_compatible(),
+        ))
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 

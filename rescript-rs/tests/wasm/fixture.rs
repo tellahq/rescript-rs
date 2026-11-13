@@ -101,8 +101,8 @@ pub fn echo_optional(value: Option<String>) -> Option<String> {
     value
 }
 
-/// A standalone option is encoded going in (serde reads `null`); the
-/// string that comes back needs no decoding, so nothing here can fail.
+/// A standalone option crosses into Rust as it is (serde reads `undefined`
+/// as `None`), and the string that comes back needs no decoding.
 #[rescript_rs::wasm]
 pub fn label_or(label: Option<String>, fallback: &str) -> String {
     label.unwrap_or_else(|| fallback.into())
@@ -233,5 +233,55 @@ impl Tally {
             0.0 => Err("no sizes".into()),
             _ => Ok(self.sizes.iter().map(|size| size.width).fold(0.0, f64::max)),
         }
+    }
+}
+
+/// `f32`, `u32` and a tuple have the same layout on both sides.
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, wasm, module = "Geometry")]
+#[serde(rename_all = "camelCase")]
+pub struct Reading {
+    pub level: f32,
+    pub order: u32,
+    pub at: (i32, f64),
+}
+
+/// The readings of `sizes`, one per size, levelled by `scale`; answered
+/// once the call has waited for nothing.
+#[rescript_rs::wasm]
+pub async fn readings(sizes: Vec<Size>, scale: f32) -> Result<Vec<Reading>, String> {
+    std::future::ready(()).await;
+
+    if scale <= 0.0 {
+        return Err(format!("{scale} is no scale"));
+    }
+
+    Ok(sizes
+        .iter()
+        .enumerate()
+        .map(|(index, size)| Reading {
+            level: size.width as f32 * scale,
+            order: index as u32,
+            at: (index as i32, size.height),
+        })
+        .collect())
+}
+
+/// Each format with its position, and `None` past the formats' end: serde
+/// writes that `None` as `null` in the tuple, so a `Positions` is decoded.
+/// (A tuple that needs a codec must be inside a named type: ppx-spice has
+/// no codec for a bare one.)
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, wasm, module = "Geometry")]
+pub struct Positions {
+    pub positions: Vec<(i32, Option<Format>)>,
+}
+
+#[rescript_rs::wasm]
+pub async fn positions(formats: Vec<Format>, count: i32) -> Positions {
+    Positions {
+        positions: (0..count)
+            .map(|index| (index, formats.get(index as usize).copied()))
+            .collect(),
     }
 }

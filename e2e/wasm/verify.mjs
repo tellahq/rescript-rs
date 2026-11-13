@@ -28,7 +28,10 @@ assert.deepEqual(run.largest, {TAG: "Ok", _0: {width: 2, height: 3, label: undef
 assert.deepEqual(run.scaled, [{width: 4, height: 6, label: "box"}, {width: 2, height: 2, label: "box"}]);
 assert.throws(() => run.tally.count(), /null pointer passed to rust/);
 assert.throws(() => geometry.Tally.make([], ""), /a tally needs a label/);
+assert.deepEqual(await run.readings, [{level: 0.1, order: 0, at: [0, 2]}, {level: 3, order: 1, at: [1, 4]}]);
+assert.deepEqual(await run.positions, {TAG: "Ok", _0: {positions: [[0, "Paperback"], [1, undefined]]}});
+await assert.rejects(geometry.readings([], 0), /0 is no scale/);
 assert.throws(() => geometry.fitted({width: "invalid", height: 1}, {type: "unbounded"}, [], ""));
 const cyclic = []; cyclic.push(cyclic);
 assert.throws(() => geometry.fitted({width: 1, height: 1}, {type: "unbounded"}, cyclic, ""));
-console.log("Generated ReScript → native serde WASM → ReScript: tagged unit/payload variants, string enums, @as fields, optional fields, null-written option fields, scalar options, arrays, codec fallback and a class passed");
+console.log("Generated ReScript → native serde WASM → ReScript: tagged unit/payload variants, string enums, @as fields, optional fields, null-written option fields, scalar options, arrays, codec fallback, a class, async functions, f32/u32 and tuples passed");
