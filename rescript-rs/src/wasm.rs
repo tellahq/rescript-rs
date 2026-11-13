@@ -13,6 +13,9 @@
 
 use js_sys::{Array, Object, Reflect};
 pub use wasm_bindgen::{self, JsValue};
+pub use wasm_bindgen_futures;
+
+mod shortest;
 
 use crate::spice::{js_number, Failure, Map, Plain, Spice, Value};
 
@@ -110,15 +113,27 @@ fn value_of(value: &JsValue, depth: usize) -> Result<Value, &'static str> {
     Ok(Value::Object(fields))
 }
 
-/// Native serde transport: no intermediate `serde_json::Value` tree.
+/// Native serde transport: no intermediate `serde_json::Value` tree, unless
+/// the type reads as JSON ([`Wasm::READ_AS_JSON`](crate::spice::Wasm)).
 pub fn from_serde<T: crate::spice::Wasm>(value: &JsValue, position: usize) -> Result<T, JsValue> {
-    serde_wasm_bindgen::from_value(value.clone())
-        .map_err(|error| JsValue::from_str(&format!("argument {position}: {error}")))
+    let refused =
+        |error: &dyn std::fmt::Display| JsValue::from_str(&format!("argument {position}: {error}"));
+
+    if T::READ_AS_JSON {
+        let json = value_of(value, 0).map_err(|message| refused(&message))?;
+
+        return serde_json::from_value(json).map_err(|error| refused(&error));
+    }
+
+    serde_wasm_bindgen::from_value(value.clone()).map_err(|error| refused(&error))
 }
 
+/// An `f32` is written as the `f64` its shortest decimal reads as.
 pub fn to_serde<T: crate::spice::Wasm>(value: &T) -> Result<JsValue, JsValue> {
     value
-        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .serialize(shortest::Shortest(
+            &serde_wasm_bindgen::Serializer::json_compatible(),
+        ))
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 

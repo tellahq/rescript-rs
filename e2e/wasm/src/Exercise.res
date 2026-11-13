@@ -25,3 +25,6 @@ let isEmpty = tally->Geometry.Tally.isEmpty
 let largest = tally->Geometry.Tally.largest
 let scaled = tally->Geometry.Tally.scaled(2.)
 let () = tally->Geometry.Tally.free
+
+let readings = Geometry.readings([{width: 0.1, height: 2.}, {width: 3., height: 4.}], 1.)
+let positions = Geometry.positions([Paperback], 2)

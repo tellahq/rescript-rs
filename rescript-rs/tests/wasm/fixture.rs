@@ -101,22 +101,26 @@ pub fn echo_optional(value: Option<String>) -> Option<String> {
     value
 }
 
-/// A standalone option is encoded going in (serde reads `null`); the
-/// string that comes back needs no decoding, so nothing here can fail.
+/// A standalone option crosses into Rust as it is (serde reads `undefined`
+/// as `None`), and the string that comes back needs no decoding.
 #[rescript_rs::wasm]
 pub fn label_or(label: Option<String>, fallback: &str) -> String {
     label.unwrap_or_else(|| fallback.into())
 }
 
 /// A payload-free enum is a string on both sides: serde's default name, or
-/// the renamed one.
+/// the renamed one. The names serde only reads (an alias, any other name)
+/// leave both as they are.
 #[derive(ReScript, Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 #[rescript(codec, wasm, module = "Geometry")]
 pub enum Format {
+    #[serde(alias = "hardback")]
     Hardcover,
     Paperback,
     #[serde(rename = "e-book")]
     Ebook,
+    #[serde(other)]
+    Unlisted,
 }
 
 #[rescript_rs::wasm]
@@ -234,4 +238,80 @@ impl Tally {
             _ => Ok(self.sizes.iter().map(|size| size.width).fold(0.0, f64::max)),
         }
     }
+}
+
+/// `f32`, `u32` and a tuple have the same layout on both sides.
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, wasm, module = "Geometry")]
+#[serde(rename_all = "camelCase")]
+pub struct Reading {
+    pub level: f32,
+    pub order: u32,
+    pub at: (i32, f64),
+}
+
+/// The readings of `sizes`, one per size, levelled by `scale`; answered
+/// once the call has waited for nothing.
+#[rescript_rs::wasm]
+pub async fn readings(sizes: Vec<Size>, scale: f32) -> Result<Vec<Reading>, String> {
+    std::future::ready(()).await;
+
+    if scale <= 0.0 {
+        return Err(format!("{scale} is no scale"));
+    }
+
+    Ok(sizes
+        .iter()
+        .enumerate()
+        .map(|(index, size)| Reading {
+            level: size.width as f32 * scale,
+            order: index as u32,
+            at: (index as i32, size.height),
+        })
+        .collect())
+}
+
+/// Each format with its position, and `None` past the formats' end: serde
+/// writes that `None` as `null` in the tuple, so a `Positions` is decoded.
+/// (A tuple that needs a codec must be inside a named type: ppx-spice has
+/// no codec for a bare one.)
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, wasm, module = "Geometry")]
+pub struct Positions {
+    pub positions: Vec<(i32, Option<Format>)>,
+}
+
+#[rescript_rs::wasm]
+pub async fn positions(formats: Vec<Format>, count: i32) -> Positions {
+    Positions {
+        positions: (0..count)
+            .map(|index| (index, formats.get(index as usize).copied()))
+            .collect(),
+    }
+}
+
+/// A stored shape, whose deserializer the binding shares with serde_json's
+/// rather than compiling it again for serde-wasm-bindgen.
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Geometry")]
+#[serde(tag = "type")]
+pub enum Stored {
+    Shelf { count: i32 },
+    Crate,
+}
+
+impl rescript_rs::spice::Wasm for Stored {
+    const READ_AS_JSON: bool = true;
+}
+
+#[rescript_rs::wasm]
+pub fn echo_stored(stored: Stored) -> Stored {
+    stored
+}
+
+/// A `u32` is read by serde, not passed as wasm-bindgen's own number, which
+/// would wrap a negative ReScript `int` into a large one.
+#[rescript_rs::wasm]
+pub fn echo_order(order: u32) -> u32 {
+    order
 }

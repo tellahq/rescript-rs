@@ -44,8 +44,7 @@ fn a_function_is_bound_with_its_own_types() {
 }
 
 /// A binding is a `result` only where it decodes what comes back, which is
-/// all that can fail: with no codec it is the external itself, and with
-/// only its arguments encoded it answers the value.
+/// all that can fail: with no codec it is the external itself.
 #[test]
 fn only_a_decoded_result_is_a_result() {
     assert_eq!(
@@ -57,29 +56,16 @@ fn only_a_decoded_result_is_a_result() {
         "@module(\"./geometry.js\")
 external unitSize: unit => size = \"unitSize\"
 
-// A standalone option is encoded going in (serde reads `null`); the
-// string that comes back needs no decoding, so nothing here can fail.
-module LabelOr = {
-  @module(\"./geometry.js\")
-  external wasm: (JSON.t, string) => string = \"labelOr\"
-
-  let call = (arg0, arg1) => {
-    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
-
-    wasm(arg0, arg1)
-  }
-}
-let labelOr = LabelOr.call
+// A standalone option crosses into Rust as it is (serde reads `undefined`
+// as `None`), and the string that comes back needs no decoding.
+@module(\"./geometry.js\")
+external labelOr: (option<string>, string) => string = \"labelOr\"
 
 module EchoOptional = {
   @module(\"./geometry.js\")
-  external wasm: JSON.t => JSON.t = \"echoOptional\"
+  external wasm: option<string> => JSON.t = \"echoOptional\"
 
-  let call = arg0 => {
-    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
-
-    wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
-  }
+  let call = arg0 => wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
 }
 let echoOptional = EchoOptional.call
 "
@@ -94,11 +80,15 @@ fn a_string_enum_is_an_ordinary_variant() {
 
     assert_eq!(
         Format::declaration(),
-        "// A payload-free enum is a string on both sides: serde's default name, or\n// the renamed one.\n@spice.serde\ntype format =\n  | Hardcover\n  | Paperback\n  | @as(\"e-book\") Ebook"
+        "// A payload-free enum is a string on both sides: serde's default name, or\n// the renamed one. The names serde only reads (an alias, any other name)\n// leave both as they are.\n@spice.serde\ntype format =\n  | @spice.alias(\"hardback\") Hardcover\n  | Paperback\n  | @as(\"e-book\") Ebook\n  | @spice.other Unlisted"
     );
     assert_eq!(
-        serde_json::to_string(&[Format::Hardcover, Format::Ebook]).unwrap(),
-        r#"["Hardcover","e-book"]"#
+        serde_json::to_string(&[Format::Hardcover, Format::Ebook, Format::Unlisted]).unwrap(),
+        r#"["Hardcover","e-book","Unlisted"]"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Vec<Format>>(r#"["hardback","pamphlet"]"#).unwrap(),
+        [Format::Hardcover, Format::Unlisted]
     );
 
     let boundary = BoundaryType {
@@ -227,6 +217,38 @@ fn a_class_cannot_take_its_module_s_own_t() {
     Module::new("Geometry").class("./geometry.js", class);
 }
 
+/// An async function is described as one; `f32`, `u32` and tuples cross
+/// without a codec, and a tuple holding an `Option` is decoded coming back.
+#[test]
+fn an_async_function_and_f32_u32_tuple_layouts_are_bound() {
+    use rescript_rs::spice::{BoundaryType, Wasm};
+
+    let boundary = |ty: &str, identity| BoundaryType {
+        ty: ty.into(),
+        identity,
+    };
+    let readings = readings_rescript();
+    let positions = positions_rescript();
+
+    assert_eq!(
+        (readings.asynchronous, readings.args, readings.output),
+        (
+            true,
+            vec![
+                boundary("array<Geometry.size>", true),
+                boundary("float", true)
+            ],
+            boundary("array<Geometry.reading>", true)
+        )
+    );
+    assert_eq!(
+        (positions.asynchronous, positions.output),
+        (true, boundary("Geometry.positions", false))
+    );
+    assert!(Positions::input_identity());
+    assert!(!fitted_rescript().asynchronous);
+}
+
 #[test]
 fn export_wasm_binding() {
     if let Ok(path) = std::env::var("WASM_TEST_BINDING") {
@@ -252,6 +274,10 @@ fn export_wasm_binding() {
                 .function("./geometry.js", echo_count_rescript())
                 .function("./geometry.js", echo_flag_rescript())
                 .class("./geometry.js", tally_rescript())
+                .with::<Reading>()
+                .function("./geometry.js", readings_rescript())
+                .with::<Positions>()
+                .function("./geometry.js", positions_rescript())
                 .render(),
         )
         .unwrap();
@@ -311,7 +337,8 @@ mod exports {
 
         assert_eq!(echoed("Paperback").as_deref(), Some("Paperback"));
         assert_eq!(echoed("e-book").as_deref(), Some("e-book"));
-        assert!(echo_format_wasm("Ebook".into()).is_err());
+        assert_eq!(echoed("Ebook").as_deref(), Some("Unlisted"));
+        assert!(echo_format_wasm(1.into()).is_err());
     }
 
     #[wasm_bindgen_test]
@@ -343,6 +370,102 @@ mod exports {
             thrown(TallyWasm::new(none(), "".into()).map(|_| JsValue::NULL)),
             "a tally needs a label"
         );
+    }
+
+    /// An `f32` reaches JavaScript as its shortest decimal, as JSON text
+    /// of it would: `0.1`, not `0.10000000149011612`.
+    #[wasm_bindgen_test]
+    async fn an_async_function_answers_its_value_with_f32_as_its_shortest_decimal() {
+        let answered = readings_wasm(
+            js(r#"[{"width": 0.1, "height": 2}, {"width": 3, "height": 4}]"#),
+            1.0.into(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&answered)).unwrap(),
+            serde_json::json!([
+                {"level": 0.1, "order": 0, "at": [0, 2]},
+                {"level": 3, "order": 1, "at": [1, 4]}
+            ])
+        );
+        assert_eq!(
+            readings_wasm(js("[]"), 0.0.into())
+                .await
+                .unwrap_err()
+                .as_string()
+                .as_deref(),
+            Some("0 is no scale")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(
+                &positions_wasm(js(r#"["Paperback"]"#), 2).await.unwrap()
+            ))
+            .unwrap(),
+            serde_json::json!({"positions": [[0, "Paperback"], [1, null]]})
+        );
+    }
+
+    /// An f32 reaches JavaScript as the number JSON text of it parses to,
+    /// and a JavaScript number reaches Rust as the f32 serde reads from
+    /// `JSON.stringify` of it: over every exponent, subnormals included.
+    #[wasm_bindgen_test]
+    fn an_f32_crosses_as_its_json_text_does() {
+        use rescript_rs::wasm::{from_serde, to_serde};
+
+        let mut state = 0x2545_f491_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+
+        for _ in 0..20_000 {
+            let value = f32::from_bits(next());
+            if !value.is_finite() {
+                continue;
+            }
+            let text = serde_json::to_string(&value).unwrap();
+            let returned = to_serde(&value).unwrap().as_f64().unwrap();
+
+            assert_eq!(
+                returned.to_bits(),
+                JSON::parse(&text).unwrap().as_f64().unwrap().to_bits(),
+                "{text}"
+            );
+
+            let number = f64::from(value) * 1.000_000_1;
+            let read: f32 = from_serde(&JsValue::from(number), 0).unwrap();
+            let expected: f32 = serde_json::from_str(&json(&JsValue::from(number))).unwrap();
+
+            assert_eq!(read.to_bits(), expected.to_bits(), "{number}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_negative_int_is_no_u32() {
+        assert_eq!(echo_order_wasm(7.into()).unwrap().as_f64(), Some(7.0));
+        assert!(echo_order_wasm((-1).into()).is_err());
+        assert!(echo_order_wasm(1.5.into()).is_err());
+    }
+
+    /// A type read as JSON reads what `JSON.stringify` of the value holds.
+    #[wasm_bindgen_test]
+    fn a_type_read_as_json_reads_its_json() {
+        let shelf = js(r#"{"type": "Shelf", "count": 2}"#);
+        Reflect::set(&shelf, &"extra".into(), &JsValue::UNDEFINED).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&echo_stored_wasm(shelf).unwrap())).unwrap(),
+            serde_json::json!({"type": "Shelf", "count": 2})
+        );
+
+        let not_a_count = js(r#"{"type": "Shelf"}"#);
+        Reflect::set(&not_a_count, &"count".into(), &JsValue::from_f64(f64::NAN)).unwrap();
+
+        assert!(echo_stored_wasm(not_a_count).is_err());
     }
 
     #[wasm_bindgen_test]

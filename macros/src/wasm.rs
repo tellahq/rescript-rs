@@ -130,7 +130,9 @@ fn docs(attrs: &[Attribute]) -> Vec<String> {
 
 /// `f64`, `i32` and `bool` cross as wasm-bindgen's own numbers and
 /// booleans, with no `JsValue` and no serde. So does an `Option` of one:
-/// its `None` is `undefined` in both directions, as ReScript's is.
+/// its `None` is `undefined` in both directions, as ReScript's is. A `u32`
+/// does not: wasm-bindgen would wrap a negative ReScript `int` into a large
+/// one, where serde refuses it.
 fn native(ty: &Type) -> bool {
     scalar(ty) || option_inner(ty).is_some_and(scalar)
 }
@@ -179,6 +181,8 @@ struct Bound {
     params: Vec<TokenStream>,
     returns: TokenStream,
     body: TokenStream,
+    /// An `async fn`, whose export answers a `Promise`.
+    asynchronous: bool,
 }
 
 fn bound(
@@ -190,9 +194,8 @@ fn bound(
     call: impl FnOnce(Vec<TokenStream>) -> TokenStream,
     object: Option<TokenStream>,
 ) -> Result<Bound> {
-    if signature.asyncness.is_some() {
-        syn_err_spanned!(signature; "an async function cannot be called from ReScript yet");
-    }
+    let asynchronous = signature.asyncness.is_some();
+
     if !signature.generics.params.is_empty() {
         syn_err_spanned!(&signature.generics; "a function called from ReScript cannot be generic");
     }
@@ -300,7 +303,14 @@ fn bound(
             }
         }
     };
-    let called = call(passed);
+    let called = match asynchronous {
+        true => {
+            let called = call(passed);
+
+            quote!(#called.await)
+        }
+        false => call(passed),
+    };
     let body = if fallible {
         quote! {
             #(#decode)*
@@ -328,6 +338,7 @@ fn bound(
             docs: &[#(#docs),*],
             args: ::std::vec![#(#boundary),*],
             output: #output,
+            asynchronous: #asynchronous,
         }
     };
 
@@ -336,6 +347,7 @@ fn bound(
         params,
         returns: quote!(::core::result::Result<#returns, #js_value>),
         body,
+        asynchronous,
     })
 }
 
@@ -370,6 +382,7 @@ fn function_attribute(args: Args, function: ItemFn) -> Result<TokenStream> {
         params,
         returns,
         body,
+        asynchronous,
     } = bound(
         signature,
         &function.attrs,
@@ -380,6 +393,16 @@ fn function_attribute(args: Args, function: ItemFn) -> Result<TokenStream> {
         None,
     )?;
     let vis = &function.vis;
+    // wasm-bindgen turns an async export's future into a `Promise` with
+    // `wasm_bindgen_futures`, which a crate depending only on rescript-rs
+    // reaches through it.
+    let (asyncness, futures) = match asynchronous {
+        true => (
+            quote!(async),
+            quote!(wasm_bindgen_futures = ::rescript_rs::wasm::wasm_bindgen_futures,),
+        ),
+        false => (quote!(), quote!()),
+    };
     let describe_fn = format_ident!("{}_rescript", ident);
     let shim = format_ident!("{}_wasm", ident);
 
@@ -396,10 +419,11 @@ fn function_attribute(args: Args, function: ItemFn) -> Result<TokenStream> {
         ::rescript_rs::wasm_items! {
             #[::rescript_rs::wasm::wasm_bindgen::prelude::wasm_bindgen(
                 js_name = #js_name,
+                #futures
                 wasm_bindgen = ::rescript_rs::wasm::wasm_bindgen
             )]
             #[doc(hidden)]
-            #vis fn #shim(#(#params),*) -> #returns {
+            #vis #asyncness fn #shim(#(#params),*) -> #returns {
                 #body
             }
         }
@@ -529,6 +553,11 @@ fn member(
 ) -> Result<Member> {
     let signature = &method.sig;
     let ident = &signature.ident;
+
+    if signature.asyncness.is_some() {
+        syn_err_spanned!(signature; "an async method cannot be called from ReScript yet: make it a free async function");
+    }
+
     let returned = match &signature.output {
         ReturnType::Default => None,
         ReturnType::Type(_, ty) => Some(fallible(ty).unwrap_or(ty)),
@@ -545,6 +574,7 @@ fn member(
             params,
             returns,
             body,
+            ..
         } = bound(
             signature,
             &method.attrs,
@@ -586,6 +616,7 @@ fn member(
         params,
         returns,
         body,
+        ..
     } = bound(
         signature,
         &method.attrs,
