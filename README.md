@@ -163,15 +163,25 @@ renamed. `poly` (`[#Hardcover | #Paperback | #"e-book"]`) and
 `#[rescript_rs::wasm]` on a function exports it through **direct native serde**
 (`serde-wasm-bindgen`), without a `serde_json::Value` bridge. Add its generated
 `<function>_rescript()` description to `Module::function`. Where layouts match,
-the generated binding is just `Ok(wasm(arg0, arg1))`: no JS Spice conversion or
+the generated binding is just the typed external
+(`external fitted: (size, fit) => size = "fitted"`): no JS Spice conversion or
 copying, and no redundant validation of trusted same-build Rust output.
 
+Where a layout differs, the binding is a module holding the external, `wasm`,
+and `call`, which encodes those arguments and decodes that result. Only
+decoding what comes back can fail, so only then is the binding's result a
+`result<output, Spice.decodeError>`; otherwise it is the value.
+
 Eligibility is recursive through records, arrays, boxes and tagged variants.
-An `Option` field needs `#[serde(skip_serializing_if = "Option::is_none")]`,
-which alone makes it an optional ReScript field (`label?: string`): omitted
-keys are valid ReScript optional fields. Optional fields whose values can themselves be null
+An `Option` field with `#[serde(skip_serializing_if = "Option::is_none")]` is
+an optional ReScript field (`label?: string`): omitted keys are valid ReScript
+optional fields, in both directions. Without it, it is `label: option<string>`:
+ReScript's `None` is `undefined`, which serde reads as `None`, so it crosses into
+Rust as it is, but serde writes `None` as `null`, so a value Rust returns is
+decoded. Option fields whose values can themselves be null
 (JSON, unit or another option) are rejected: native serde would lose the
-difference between a present null and an absent field. Standalone options, unit values and recursive layouts
+difference between a present null and an absent field. Standalone options
+(other than a scalar's, below), unit values and recursive layouts
 retain JS codecs where representations differ, but still use native serde in
 Rust. Unknown/custom serde attributes are rejected rather than guessing.
 `#[rescript(serde)]` is the legacy Spice-to-serde adapter and cannot be combined
@@ -183,15 +193,71 @@ it does not reproduce JSON normalization for non-finite floats, f32, defaults or
 tuples. f32 is deliberately not a built-in `Wasm` type. Never bypass decoders for
 arbitrary external JSON. This optimization is confined to the typed WASM boundary.
 
+`f64`, `i32` and `bool` arguments and results, and a function returning
+nothing, cross as wasm-bindgen passes them: no `JsValue` and no serde. A
+ReScript `float` is always a number, so nothing is lost by not checking it.
+So does an `Option` of one of them: wasm-bindgen's `None` is `undefined` in
+both directions, as ReScript's is, so `Option<f64>` is an `option<float>` with
+no codec.
+
+On an inherent `impl` block, `#[rescript_rs::wasm]` binds a class: ReScript
+holds the Rust value as an opaque object.
+
+```rust
+pub struct Clock { rate: f64 }
+
+/// A clock running at a rate.
+#[rescript_rs::wasm]
+impl Clock {
+    pub fn new(rate: f64) -> Result<Self, String> { … }
+    pub fn output_ms(&self, ms: f64) -> f64 { … }
+    pub fn set_rate(&mut self, rate: f64) { … }
+    fn helper(&self) { … } // not bound
+}
+```
+
+Its one `pub` function returning `Self` (or `Result<Self, E>`) is the
+constructor; its `pub` methods take `&self` or `&mut self`. The block stays as
+written, so the type is tested natively. `clock_rescript()` describes it for
+`Module::class`, which renders:
+
+```rescript
+// A clock running at a rate.
+module Clock = {
+  type t
+
+  @module("./app.js") @new
+  external make: float => t = "Clock"
+
+  @send
+  external outputMs: (t, float) => float = "outputMs"
+
+  @send
+  external setRate: (t, float) => unit = "setRate"
+
+  @send external free: t => unit = "free"
+}
+```
+
+Each member is bound as a function is: an external where no codec runs
+(`clock->Clock.outputMs(ms)` compiles to `clock.outputMs(ms)`), a `result`
+only where what comes back is decoded. `free` releases the object; calling it
+after that throws. The export is a `ClockWasm` wrapper class named `Clock` in JavaScript
+(`js_name` renames it, `name` the ReScript module). A type of the module the
+class is rendered into named `t` would be shadowed by the object's, so it is
+refused. So is a method named `make` or `free`: `free` would replace the
+JavaScript class's own, and the object would never be released.
+
 Enable `wasm-bindgen` in the final WASM crate and `pub use` each library's
-`<function>_wasm` export there so the linker retains it. The application function
-stays an ordinary typed Rust function. Errors are thrown as JS exceptions;
-successful generated calls return `Ok(value)`. `name` and `js_name` rename the
+`<function>_wasm` and `<Type>Wasm` exports there so the linker retains them. The application function
+stays an ordinary typed Rust function. An `Err` it returns and an argument it
+refuses are thrown as JS exceptions. `name` and `js_name` rename the
 ReScript function and the export, respectively.
 
 `e2e/wasm/run.sh` compiles real generated ReScript and optimized WASM and runs
 them together in Node, covering tagged unit/payload variants, renamed keys,
-optional fields, arrays and the standalone-option codec fallback.
+optional and null-written option fields, arrays, the standalone-option codec
+fallback and a class.
 
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\
@@ -241,7 +307,7 @@ When rescript-rs encounters an unsupported serde attribute, a warning is emitted
 | tokio-impl         | Implement `TS` for types from *tokio*                                                                                                               |
 | jiff-impl          | Implement `TS` for types from *jiff*                                                                                                                |
 | arrayvec-impl      | Implement `TS` for types from *arrayvec*                                                                                                            |
-| wasm-bindgen       | The wasm-bindgen exports of `#[rescript_rs::wasm]` functions, and `rescript_rs::wasm`                                                               |
+| wasm-bindgen       | The wasm-bindgen exports of `#[rescript_rs::wasm]` functions and classes, and `rescript_rs::wasm`                                                   |
 
 ### Contributing
 Contributions are always welcome!

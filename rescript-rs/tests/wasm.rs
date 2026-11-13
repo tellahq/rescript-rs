@@ -43,6 +43,49 @@ fn a_function_is_bound_with_its_own_types() {
     assert!(!scored_rescript().args[1].identity);
 }
 
+/// A binding is a `result` only where it decodes what comes back, which is
+/// all that can fail: with no codec it is the external itself, and with
+/// only its arguments encoded it answers the value.
+#[test]
+fn only_a_decoded_result_is_a_result() {
+    assert_eq!(
+        Module::new("Geometry")
+            .function("./geometry.js", unit_size_rescript())
+            .function("./geometry.js", label_or_rescript())
+            .function("./geometry.js", echo_optional_rescript())
+            .render(),
+        "@module(\"./geometry.js\")
+external unitSize: unit => size = \"unitSize\"
+
+// A standalone option is encoded going in (serde reads `null`); the
+// string that comes back needs no decoding, so nothing here can fail.
+module LabelOr = {
+  @module(\"./geometry.js\")
+  external wasm: (JSON.t, string) => string = \"labelOr\"
+
+  let call = (arg0, arg1) => {
+    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
+
+    wasm(arg0, arg1)
+  }
+}
+let labelOr = LabelOr.call
+
+module EchoOptional = {
+  @module(\"./geometry.js\")
+  external wasm: JSON.t => JSON.t = \"echoOptional\"
+
+  let call = arg0 => {
+    let arg0 = Spice.optionToNullableJson(Spice.stringToJson, arg0)
+
+    wasm(arg0)->Spice.optionFromJson(Spice.stringFromJson, _)
+  }
+}
+let echoOptional = EchoOptional.call
+"
+    );
+}
+
 /// A payload-free enum needs neither a tag nor `poly`: an ordinary variant
 /// is the string serde writes, under the same name.
 #[test]
@@ -68,6 +111,122 @@ fn a_string_enum_is_an_ordinary_variant() {
     assert_eq!(function.output, boundary);
 }
 
+/// A layout crosses without a codec in each direction it is equal in:
+/// ReScript's None is `undefined`, which serde reads as None, but serde
+/// writes a field it does not omit as `null`.
+#[test]
+fn an_option_field_serde_writes_as_null_crosses_only_into_rust() {
+    use rescript_rs::spice::{BoundaryType, Wasm};
+
+    assert!(Curve::input_identity());
+    assert!(!Curve::output_identity());
+
+    let function = echo_curve_rescript();
+
+    assert_eq!(
+        (function.args, function.output),
+        (
+            vec![BoundaryType {
+                ty: "Geometry.curve".into(),
+                identity: true
+            }],
+            BoundaryType {
+                ty: "Geometry.curve".into(),
+                identity: false
+            }
+        )
+    );
+}
+
+/// wasm-bindgen's `None` is `undefined` in both directions, as ReScript's
+/// is: an option of a scalar needs no codec either way.
+#[test]
+fn an_option_of_a_scalar_crosses_as_it_is() {
+    use rescript_rs::spice::BoundaryType;
+
+    let layouts = [
+        (echo_number_rescript(), "option<float>"),
+        (echo_count_rescript(), "option<int>"),
+        (echo_flag_rescript(), "option<bool>"),
+    ];
+
+    for (function, ty) in layouts {
+        let boundary = BoundaryType {
+            ty: ty.into(),
+            identity: true,
+        };
+
+        assert_eq!(function.args, vec![boundary.clone()]);
+        assert_eq!(function.output, boundary);
+    }
+}
+
+/// The constructor is the pub function returning Self, the methods the pub
+/// ones taking self; scalars and `()` cross as wasm-bindgen passes them.
+#[test]
+fn a_class_is_bound_with_its_constructor_and_methods() {
+    let class = tally_rescript();
+    fn layout(
+        function: &rescript_rs::spice::Function,
+    ) -> (&'static str, &'static str, Vec<(&str, bool)>, &str, bool) {
+        let args: Vec<_> = function
+            .args
+            .iter()
+            .map(|arg| (arg.ty.as_str(), arg.identity))
+            .collect();
+
+        (
+            function.name,
+            function.js_name,
+            args,
+            function.output.ty.as_str(),
+            function.output.identity,
+        )
+    }
+
+    assert_eq!((class.name, class.js_name), ("Tally", "GeometryTally"));
+    assert_eq!(
+        layout(&class.constructor),
+        (
+            "make",
+            "GeometryTally",
+            vec![("array<Geometry.size>", true), ("string", true)],
+            "t",
+            true
+        )
+    );
+    assert_eq!(
+        class.methods.iter().map(layout).collect::<Vec<_>>(),
+        vec![
+            ("add", "add", vec![("Geometry.size", true)], "unit", true),
+            ("area", "area", vec![("float", true)], "float", true),
+            ("count", "count", vec![], "int", true),
+            ("isEmpty", "isEmpty", vec![], "bool", true),
+            ("label", "label", vec![], "string", true),
+            ("largest", "largest", vec![], "option<Geometry.size>", false),
+            (
+                "scaled",
+                "scaled",
+                vec![("float", true)],
+                "array<Geometry.size>",
+                true
+            ),
+            ("widest", "widest", vec![], "float", true),
+        ]
+    );
+}
+
+/// Inside `module Tally = { type t … }`, the module's own `t` would be the
+/// object's.
+#[test]
+#[should_panic(expected = "names Geometry.t")]
+fn a_class_cannot_take_its_module_s_own_t() {
+    let mut class = tally_rescript();
+    class.methods[0].args[0].ty = "Geometry.t".into();
+
+    Module::new("Geometry").class("./geometry.js", class);
+}
+
 #[test]
 fn export_wasm_binding() {
     if let Ok(path) = std::env::var("WASM_TEST_BINDING") {
@@ -85,7 +244,14 @@ fn export_wasm_binding() {
                 .function("./geometry.js", unit_size_rescript())
                 .function("./geometry.js", echo_shape_rescript())
                 .function("./geometry.js", echo_optional_rescript())
+                .function("./geometry.js", label_or_rescript())
                 .function("./geometry.js", echo_format_rescript())
+                .with::<Curve>()
+                .function("./geometry.js", echo_curve_rescript())
+                .function("./geometry.js", echo_number_rescript())
+                .function("./geometry.js", echo_count_rescript())
+                .function("./geometry.js", echo_flag_rescript())
+                .class("./geometry.js", tally_rescript())
                 .render(),
         )
         .unwrap();
@@ -133,7 +299,10 @@ mod exports {
             serde_json::from_str::<Value>(&json(&unit_size_wasm().unwrap())).unwrap(),
             serde_json::json!({"width":1,"height":1})
         );
-        assert_eq!(square_root_wasm(9.0.into()).unwrap().as_f64(), Some(3.0));
+        assert_eq!(square_root_wasm(9.0), Ok(3.0));
+        assert_eq!(echo_number_wasm(Some(0.0)), Ok(Some(0.0)));
+        assert_eq!(echo_count_wasm(None), Ok(None));
+        assert_eq!(echo_flag_wasm(Some(false)), Ok(Some(false)));
     }
 
     #[wasm_bindgen_test]
@@ -167,8 +336,47 @@ mod exports {
         .is_err());
 
         assert_eq!(
-            thrown(square_root_wasm((-1.0).into())),
-            "-1 has no square root"
+            square_root_wasm(-1.0).unwrap_err().as_string().as_deref(),
+            Some("-1 has no square root")
         );
+        assert_eq!(
+            thrown(TallyWasm::new(none(), "".into()).map(|_| JsValue::NULL)),
+            "a tally needs a label"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn an_undefined_option_field_reads_as_none() {
+        let curve = js(r#"{"name": "ease"}"#);
+        Reflect::set(&curve, &"controls".into(), &JsValue::UNDEFINED).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&echo_curve_wasm(curve).unwrap())).unwrap(),
+            serde_json::json!({"name": "ease", "controls": null})
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_class_is_constructed_and_called() {
+        let mut tally = TallyWasm::new(js(r#"[{"width": 2, "height": 3}]"#), "box".into()).unwrap();
+
+        assert_eq!(tally.add(js(r#"{"width": 1, "height": 1}"#)), Ok(()));
+        assert_eq!(tally.area(2.0), Ok(28.0));
+        assert_eq!(tally.count(), Ok(2));
+        assert_eq!(tally.is_empty(), Ok(false));
+        assert_eq!(tally.widest(), Ok(2.0));
+        assert_eq!(tally.label().unwrap().as_string().as_deref(), Some("box"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&tally.scaled(2.0).unwrap())).unwrap(),
+            serde_json::json!([
+                {"width": 4, "height": 6, "label": "box"},
+                {"width": 2, "height": 2, "label": "box"}
+            ])
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&tally.largest().unwrap())).unwrap(),
+            serde_json::json!({"width": 2, "height": 3})
+        );
+        assert!(tally.add(js(r#"{"width": 1}"#)).is_err());
     }
 }

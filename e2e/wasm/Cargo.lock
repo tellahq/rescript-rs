@@ -251,7 +251,6 @@ version = "0.1.0"
 dependencies = [
  "rescript-rs",
  "serde",
- "wasm-bindgen",
 ]
 
 [[package]]

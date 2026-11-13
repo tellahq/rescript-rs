@@ -360,66 +360,172 @@ pub struct Function {
 
 impl Function {
     fn render(&self, js_module: &str) -> String {
-        let mut module = self.name.to_owned();
-        module[..1].make_ascii_uppercase();
-        let args: Vec<String> = (0..self.args.len()).map(|i| format!("arg{i}")).collect();
-        let ty = |value: &BoundaryType| {
-            if value.identity {
-                value.ty.clone()
-            } else {
-                "JSON.t".into()
-            }
-        };
-        let arg_types = match self.args.as_slice() {
-            [] => "unit".into(),
-            [one] => ty(one),
-            many => format!("({})", many.iter().map(ty).collect::<Vec<_>>().join(", ")),
-        };
+        let external = format!("@module({})", rescript_string(js_module));
+
+        binding(self, &external, false)
+    }
+}
+
+/// A Rust type ReScript holds as an opaque wasm-bindgen object: its
+/// constructor and its methods.
+///
+/// The class has its own `free`, which releases the object. A method of
+/// that name would replace it in JavaScript:
+/// ```compile_fail
+/// pub struct Pool;
+///
+/// #[rescript_rs::wasm]
+/// impl Pool {
+///     pub fn new() -> Self {
+///         Pool
+///     }
+///
+///     pub fn free(&mut self) {}
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct Class {
+    /// The ReScript module the object's type `t` is declared in.
+    pub name: &'static str,
+    /// The JavaScript class wasm-bindgen exports.
+    pub js_name: &'static str,
+    pub docs: &'static [&'static str],
+    /// `make`, which answers a new object, `t`.
+    pub constructor: Function,
+    /// Called on an object, which is not among their `args`.
+    pub methods: Vec<Function>,
+}
+
+impl Class {
+    fn render(&self, js_module: &str) -> String {
+        let new = format!("@module({}) @new", rescript_string(js_module));
+        let mut members = vec![binding(&self.constructor, &new, false)];
+
+        for method in &self.methods {
+            members.push(binding(method, "@send", true));
+        }
+        members.push("@send external free: t => unit = \"free\"\n".into());
+
         let mut out: String = self
             .docs
             .iter()
             .map(|line| format!("// {line}\n"))
             .collect();
 
-        out.push_str(&format!(
-            "module {module} = {{\n  @module({})\n  external wasm: {} => {} = {}\n\n",
-            rescript_string(js_module),
-            arg_types,
-            ty(&self.output),
-            rescript_string(self.js_name),
-        ));
-        let parameters = match args.as_slice() {
-            [] => "()".into(),
-            [one] => one.clone(),
-            _ => format!("({})", args.join(", ")),
-        };
-        let converted: Vec<String> = self
-            .args
-            .iter()
-            .zip(&args)
-            .filter_map(|(ty, arg)| {
-                (!ty.identity)
-                    .then(|| format!("    let {arg} = {}\n", ValueCodec::of(&ty.ty).encode(arg)))
-            })
-            .collect();
-        let call = format!("wasm({})", args.join(", "));
-        let call = if self.output.identity {
-            format!("Ok({call})")
-        } else {
-            ValueCodec::of(&self.output.ty).decode(&call)
-        };
+        out.push_str(&format!("module {} = {{\n  type t\n", self.name));
 
-        if converted.is_empty() {
-            out.push_str(&format!("  let call = {parameters} => {call}\n"));
-        } else {
-            out.push_str(&format!(
-                "  let call = {parameters} => {{\n{}\n    {call}\n  }}\n",
-                converted.concat()
-            ));
+        for member in members {
+            out.push('\n');
+
+            for line in member.lines() {
+                if !line.is_empty() {
+                    out.push_str("  ");
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
         }
-        out.push_str(&format!("}}\nlet {} = {module}.call\n", self.name));
+        out.push_str("}\n");
         out
     }
+
+    /// Every type a member takes or answers.
+    fn types(&self) -> impl Iterator<Item = &str> {
+        let members = std::iter::once(&self.constructor).chain(&self.methods);
+
+        members
+            .flat_map(|member| member.args.iter().chain(Some(&member.output)))
+            .map(|boundary| boundary.ty.as_str())
+    }
+}
+
+/// `function` as ReScript calls it. Where every runtime layout equals
+/// serde's, that is its typed external. Otherwise it is a module holding
+/// the external, `wasm`, and `call`, which encodes the arguments and
+/// decodes what comes back. Only decoding can fail, so only a decoded
+/// result is a `result`. A method's external also takes the object, `t`.
+fn binding(function: &Function, external: &str, method: bool) -> String {
+    let args: Vec<String> = (0..function.args.len())
+        .map(|i| format!("arg{i}"))
+        .collect();
+    let ty = |value: &BoundaryType| {
+        if value.identity {
+            value.ty.clone()
+        } else {
+            "JSON.t".into()
+        }
+    };
+    let types: Vec<String> = method
+        .then(|| "t".to_owned())
+        .into_iter()
+        .chain(function.args.iter().map(ty))
+        .collect();
+    let signature = format!(
+        "{} => {} = {}",
+        match types.as_slice() {
+            [] => "unit".into(),
+            [one] => one.clone(),
+            many => format!("({})", many.join(", ")),
+        },
+        ty(&function.output),
+        rescript_string(function.js_name),
+    );
+    let mut out: String = function
+        .docs
+        .iter()
+        .map(|line| format!("// {line}\n"))
+        .collect();
+
+    if function.output.identity && function.args.iter().all(|arg| arg.identity) {
+        out.push_str(&format!(
+            "{external}\nexternal {}: {signature}\n",
+            function.name
+        ));
+        return out;
+    }
+
+    let mut module = function.name.to_owned();
+    module[..1].make_ascii_uppercase();
+    let passed: Vec<String> = method
+        .then(|| "self".to_owned())
+        .into_iter()
+        .chain(args.iter().cloned())
+        .collect();
+    let parameters = match passed.as_slice() {
+        [] => "()".into(),
+        [one] => one.clone(),
+        _ => format!("({})", passed.join(", ")),
+    };
+    let converted: Vec<String> = function
+        .args
+        .iter()
+        .zip(&args)
+        .filter_map(|(ty, arg)| {
+            (!ty.identity)
+                .then(|| format!("    let {arg} = {}\n", ValueCodec::of(&ty.ty).encode(arg)))
+        })
+        .collect();
+    let call = format!("wasm({})", passed.join(", "));
+    let call = if function.output.identity {
+        call
+    } else {
+        ValueCodec::of(&function.output.ty).decode(&call)
+    };
+
+    out.push_str(&format!(
+        "module {module} = {{\n  {external}\n  external wasm: {signature}\n\n"
+    ));
+
+    if converted.is_empty() {
+        out.push_str(&format!("  let call = {parameters} => {call}\n"));
+    } else {
+        out.push_str(&format!(
+            "  let call = {parameters} => {{\n{}\n    {call}\n  }}\n",
+            converted.concat()
+        ));
+    }
+    out.push_str(&format!("}}\nlet {} = {module}.call\n", function.name));
+    out
 }
 
 /// The codecs ppx-spice reads and writes a value of a ReScript type
@@ -686,11 +792,39 @@ impl<H: Host> Module<H> {
 
     /// A function exported from the wasm-bindgen module at `js_module`
     /// (as the generated file imports it, e.g. `./wasm/app.js`), called as
-    /// `name(arg, …)`: it encodes its arguments, calls the export and
-    /// decodes what comes back, a `result<output, Spice.decodeError>`. See
+    /// `name(arg, …)`. Where every runtime layout equals serde's it is the
+    /// typed external. Otherwise it encodes those arguments, calls the
+    /// export and decodes what comes back; a decoded result is a
+    /// `result<output, Spice.decodeError>`, any other the value itself. See
     /// `rescript_rs::wasm`.
     pub fn function(mut self, js_module: &str, function: Function) -> Self {
         self.items.push(Item::Function(function.render(js_module)));
+        self
+    }
+
+    /// A class exported from the wasm-bindgen module at `js_module`, as
+    /// `module Name = { type t … }`: `make` constructs an object, each
+    /// method takes it first (`clock->Name.outputMs(ms)`), and `free`
+    /// releases it. Each member is bound as a function is: an external
+    /// where no codec runs, a `result` only where its result is decoded.
+    pub fn class(mut self, js_module: &str, class: Class) -> Self {
+        let mut scope = Some(self.name);
+
+        while let Some(module) = scope {
+            let own = format!("{module}.t");
+
+            for ty in class.types() {
+                assert!(
+                    !TypeTokens(ty).any(|token| token == own),
+                    "{} names {own}, which is `t` inside module {} = {{ … }}: declare it under another name",
+                    class.name,
+                    class.name,
+                );
+            }
+            scope = module.rsplit_once('.').map(|(parent, _)| parent);
+        }
+
+        self.items.push(Item::Function(class.render(js_module)));
         self
     }
 

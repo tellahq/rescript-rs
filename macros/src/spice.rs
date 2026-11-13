@@ -507,7 +507,7 @@ fn omits_none(attr: &FieldAttr, ty: &Type) -> bool {
 }
 
 /// `T` when `ty` is `Option<T>`.
-fn option_inner(ty: &Type) -> Option<&Type> {
+pub(crate) fn option_inner(ty: &Type) -> Option<&Type> {
     let Type::Path(path) = ty else {
         return None;
     };
@@ -2365,6 +2365,7 @@ fn derive_wasm(
     }
     let mut types = vec![];
     let mut optional_types = vec![];
+    let mut writes_null = false;
     let fields: Vec<&syn::Fields> = match &input.data {
         Data::Struct(data) => vec![&data.fields],
         Data::Enum(data) => {
@@ -2447,8 +2448,11 @@ fn derive_wasm(
                 ));
             }
             if let Some(inner) = option_inner(&field.ty) {
+                // ReScript's None is `undefined`, which serde reads as None,
+                // but serde writes None as `null` unless it omits the field:
+                // only a value going into Rust crosses as it is.
                 if !omits_none(&field.attr, &field.ty) {
-                    return Err(Error::new(field.ident.span(), "a wasm option field needs #[serde(skip_serializing_if = \"Option::is_none\")]: serde would write None as null"));
+                    writes_null = true;
                 }
                 optional_types.push(inner.clone());
                 types.push(inner.clone());
@@ -2463,9 +2467,9 @@ fn derive_wasm(
             }
         }
     }
-    let guard = quote!(const { #(assert!(!<#optional_types as #spice::Wasm>::NULLABLE, "an optional WASM field cannot contain a nullable value; use the codec bridge");)* });
+    let guard = quote!(const { #(assert!(!<#optional_types as #spice::Wasm>::NULLABLE, "a WASM option field cannot contain a nullable value; use the codec bridge");)* });
     let input_identity = quote!(true #(&& <#types as #spice::Wasm>::input_identity())*);
-    let output_identity = quote!(true #(&& <#types as #spice::Wasm>::output_identity())*);
+    let output_identity = quote!(!#writes_null #(&& <#types as #spice::Wasm>::output_identity())*);
 
     Ok(quote! {
         impl #impl_generics #spice::Wasm for #ident #ty_generics #where_clause {
