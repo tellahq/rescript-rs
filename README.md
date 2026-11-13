@@ -204,6 +204,13 @@ widening `0.10000000149011612`), as JSON text and its Spice codec write it. A
 both sides, so it crosses as its items do; one that needs a codec must sit
 inside a named type, since ppx-spice has no codec for a bare tuple.
 
+A type whose JS codec remains can set `const READ_AS_JSON: bool = true` in
+its `Wasm` impl: Rust then reads it from what `JSON.stringify` of the value
+holds, as a `serde_json::Value`, so its binding reuses the type's serde_json
+deserializer instead of compiling it again for serde-wasm-bindgen. That copy
+is large for internally tagged enums, which serde buffers through its
+`Content` once per error type.
+
 An `async fn` binds the same way and answers a `promise`: its typed external
 answers `promise<t>`, and where the result is decoded, `call` decodes it in
 `Promise.thenResolve`. A returned `Err` rejects the promise. Methods cannot be

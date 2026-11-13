@@ -444,6 +444,23 @@ mod exports {
         }
     }
 
+    /// A type read as JSON reads what `JSON.stringify` of the value holds.
+    #[wasm_bindgen_test]
+    fn a_type_read_as_json_reads_its_json() {
+        let shelf = js(r#"{"type": "Shelf", "count": 2}"#);
+        Reflect::set(&shelf, &"extra".into(), &JsValue::UNDEFINED).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Value>(&json(&echo_stored_wasm(shelf).unwrap())).unwrap(),
+            serde_json::json!({"type": "Shelf", "count": 2})
+        );
+
+        let not_a_count = js(r#"{"type": "Shelf"}"#);
+        Reflect::set(&not_a_count, &"count".into(), &JsValue::from_f64(f64::NAN)).unwrap();
+
+        assert!(echo_stored_wasm(not_a_count).is_err());
+    }
+
     #[wasm_bindgen_test]
     fn an_undefined_option_field_reads_as_none() {
         let curve = js(r#"{"name": "ease"}"#);

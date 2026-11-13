@@ -289,3 +289,22 @@ pub async fn positions(formats: Vec<Format>, count: i32) -> Positions {
             .collect(),
     }
 }
+
+/// A stored shape, whose deserializer the binding shares with serde_json's
+/// rather than compiling it again for serde-wasm-bindgen.
+#[derive(ReScript, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[rescript(codec, module = "Geometry")]
+#[serde(tag = "type")]
+pub enum Stored {
+    Shelf { count: i32 },
+    Crate,
+}
+
+impl rescript_rs::spice::Wasm for Stored {
+    const READ_AS_JSON: bool = true;
+}
+
+#[rescript_rs::wasm]
+pub fn echo_stored(stored: Stored) -> Stored {
+    stored
+}

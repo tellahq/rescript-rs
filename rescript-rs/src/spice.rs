@@ -278,6 +278,13 @@ pub trait Wasm: Spice + 'static + ::serde::Serialize + ::serde::de::DeserializeO
     /// Whether a present value can itself serialize as null. Such a value
     /// cannot be an optional field: serde would read it back as None.
     const NULLABLE: bool = false;
+    /// Read in Rust from the JSON its codec wrote, as a `serde_json::Value`
+    /// (what `JSON.parse(JSON.stringify(value))` holds), instead of straight
+    /// from the JavaScript value. For a type whose deserializer is large and
+    /// already compiled for serde_json, so its binding adds no second copy:
+    /// serde buffers an internally tagged enum through its `Content`, whose
+    /// deserializer is compiled again for every error type.
+    const READ_AS_JSON: bool = false;
     fn input_identity() -> bool {
         false
     }
