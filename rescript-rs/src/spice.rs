@@ -295,15 +295,41 @@ pub trait Wasm: Spice + 'static + ::serde::Serialize + ::serde::de::DeserializeO
 
 /// Recursive layouts conservatively retain their JS codecs.
 pub fn identity_once<T: 'static>(check: impl FnOnce() -> bool) -> bool {
-    use std::{any::TypeId, cell::RefCell, collections::HashSet};
-    thread_local! { static VISITING: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new()); }
-    let id = TypeId::of::<T>();
-    if !VISITING.with(|set| set.borrow_mut().insert(id)) {
+    if !visit(std::any::TypeId::of::<T>()) {
         return false;
     }
     let result = check();
-    VISITING.with(|set| set.borrow_mut().remove(&id));
+
+    visited();
     result
+}
+
+thread_local! {
+    /// The types whose layout is being checked, outermost first. A list,
+    /// not a set: it is a few deep, and a WASM module calls this for every
+    /// value it returns, so it should not bring a hash table with it.
+    static VISITING: std::cell::RefCell<Vec<std::any::TypeId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The innermost check is over.
+fn visited() {
+    VISITING.with(|visiting| {
+        visiting.borrow_mut().pop();
+    });
+}
+
+/// Whether `id` was not being checked already; it is now.
+fn visit(id: std::any::TypeId) -> bool {
+    VISITING.with(|visiting| {
+        let mut visiting = visiting.borrow_mut();
+        let new = !visiting.contains(&id);
+
+        if new {
+            visiting.push(id);
+        }
+        new
+    })
 }
 
 macro_rules! wasm_scalar {
@@ -345,13 +371,17 @@ impl<T: Wasm> Wasm for Vec<T> {
         T::output_identity()
     }
 }
-/// Going into Rust, ReScript's `None` is `undefined`, which serde reads as
-/// `None`, unless the value inside can itself be null. Coming back, serde
-/// writes `null`.
+/// ReScript's `None` is `undefined`: serde reads it as `None` going into
+/// Rust, and a `None` that reaches ReScript as it is is written as
+/// `undefined` coming back. Not where the value inside can itself be null:
+/// ReScript tells `Some(null)` from `None`, serde does not.
 impl<T: Wasm> Wasm for Option<T> {
     const NULLABLE: bool = true;
     fn input_identity() -> bool {
         !T::NULLABLE && T::input_identity()
+    }
+    fn output_identity() -> bool {
+        !T::NULLABLE && T::output_identity()
     }
 }
 impl<T: Wasm> Wasm for Box<T> {
