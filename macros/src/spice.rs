@@ -2365,7 +2365,6 @@ fn derive_wasm(
     }
     let mut types = vec![];
     let mut optional_types = vec![];
-    let mut writes_null = false;
     let fields: Vec<&syn::Fields> = match &input.data {
         Data::Struct(data) => vec![&data.fields],
         Data::Enum(data) => {
@@ -2453,12 +2452,9 @@ fn derive_wasm(
                 ));
             }
             if let Some(inner) = option_inner(&field.ty) {
-                // ReScript's None is `undefined`, which serde reads as None,
-                // but serde writes None as `null` unless it omits the field:
-                // only a value going into Rust crosses as it is.
-                if !omits_none(&field.attr, &field.ty) {
-                    writes_null = true;
-                }
+                // ReScript's None is `undefined`: serde reads it as None, and
+                // a None that reaches ReScript as it is is written as
+                // `undefined`, or its field is omitted.
                 optional_types.push(inner.clone());
                 types.push(inner.clone());
             } else {
@@ -2474,7 +2470,7 @@ fn derive_wasm(
     }
     let guard = quote!(const { #(assert!(!<#optional_types as #spice::Wasm>::NULLABLE, "a WASM option field cannot contain a nullable value; use the codec bridge");)* });
     let input_identity = quote!(true #(&& <#types as #spice::Wasm>::input_identity())*);
-    let output_identity = quote!(!#writes_null #(&& <#types as #spice::Wasm>::output_identity())*);
+    let output_identity = quote!(true #(&& <#types as #spice::Wasm>::output_identity())*);
 
     Ok(quote! {
         impl #impl_generics #spice::Wasm for #ident #ty_generics #where_clause {

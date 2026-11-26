@@ -178,15 +178,17 @@ decoding what comes back can fail, so only then is the binding's result a
 Eligibility is recursive through records, arrays, boxes and tagged variants.
 An `Option` field with `#[serde(skip_serializing_if = "Option::is_none")]` is
 an optional ReScript field (`label?: string`): omitted keys are valid ReScript
-optional fields, in both directions. Without it, it is `label: option<string>`:
-ReScript's `None` is `undefined`, which serde reads as `None`, so it crosses into
-Rust as it is, but serde writes `None` as `null`, so a value Rust returns is
-decoded. Option fields whose values can themselves be null
+optional fields, in both directions. Without it, it is `label: option<string>`,
+which crosses as it is both ways too: ReScript's `None` is `undefined`, which
+serde reads as `None`, and Rust writes a `None` that reaches ReScript as it is
+as `undefined` (a property that is there, as ReScript's own record has), not
+serde's `null`. Option fields whose values can themselves be null
 (JSON, unit or another option) are rejected: native serde would lose the
 difference between a present null and an absent field. A standalone option
-crosses into Rust as it is too (serde reads `undefined` as `None`) unless its
-value can itself be null; coming back it is decoded, as are unit values and
-recursive layouts. Where a JS codec remains, Rust still uses native serde. Unknown/custom serde attributes are rejected rather than guessing.
+crosses as it is both ways as well, unless its value can itself be null. A
+value a Spice decoder reads first (a type whose JS codec remains, unit values,
+recursive layouts) keeps `null` for its `None`s, as JSON has. Where a JS codec
+remains, Rust still uses native serde. Unknown/custom serde attributes are rejected rather than guessing.
 `#[rescript(serde)]` is the legacy Spice-to-serde adapter and cannot be combined
 with `wasm`; derive `serde::Serialize` and `serde::Deserialize` instead.
 
@@ -280,8 +282,8 @@ ReScript function and the export, respectively.
 
 `e2e/wasm/run.sh` compiles real generated ReScript and optimized WASM and runs
 them together in Node, covering tagged unit/payload variants, renamed keys,
-optional and null-written option fields, arrays, the standalone-option codec
-fallback and a class.
+optional fields, option fields and standalone options written as `undefined`,
+an option a decoder reads, arrays and a class.
 
 ### Configuration
 When using `#[rescript(export)]` on a type, rescript-rs generates a test which writes the bindings for it to disk.\

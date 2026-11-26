@@ -28,3 +28,5 @@ let () = tally->Geometry.Tally.free
 
 let readings = Geometry.readings([{width: 0.1, height: 2.}, {width: 3., height: 4.}], 1.)
 let positions = Geometry.positions([Paperback], 2)
+let notStored = Geometry.findStored(0)
+let stored = Geometry.findStored(2)

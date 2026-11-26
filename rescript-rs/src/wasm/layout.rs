@@ -1,44 +1,71 @@
-//! A serializer that writes every `f32` as the `f64` its shortest decimal
-//! reads as, and passes everything else to the one it wraps.
+//! A serializer that writes a value as ReScript holds it, around
+//! serde-wasm-bindgen's.
 //!
-//! serde-wasm-bindgen widens an `f32` exactly (`0.1f32` is
-//! `0.10000000149011612` in JavaScript), where JSON text of it, and the
-//! `f32`'s own Spice codec, write `0.1`.
+//! Every `f32` is written as the `f64` its shortest decimal reads as:
+//! serde-wasm-bindgen widens it exactly (`0.1f32` is `0.10000000149011612`
+//! in JavaScript), where JSON text of it, and the `f32`'s own Spice codec,
+//! write `0.1`.
+//!
+//! `None` is written as `undefined`, ReScript's own `None`, where the value
+//! reaches ReScript as it is; where a Spice decoder reads it first, it stays
+//! the `null` JSON has.
 
 use serde::ser::{
     Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
+use wasm_bindgen::JsValue;
 
-pub(crate) struct Shortest<S>(pub(crate) S);
+pub(crate) struct Layout<S> {
+    pub(crate) inner: S,
+    /// Write `None` as `undefined`. Only serde-wasm-bindgen's serializer
+    /// passes a JavaScript value through, so only it can be wrapped with
+    /// this set.
+    pub(crate) undefined: bool,
+}
 
-/// A value serialized through [`Shortest`].
-struct Value<'a, T: ?Sized>(&'a T);
+/// A value serialized through [`Layout`].
+struct Value<'a, T: ?Sized> {
+    value: &'a T,
+    undefined: bool,
+}
 
 impl<T: ?Sized + Serialize> Serialize for Value<'_, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(Shortest(serializer))
+        self.value.serialize(Layout {
+            inner: serializer,
+            undefined: self.undefined,
+        })
+    }
+}
+
+impl<S> Layout<S> {
+    fn value<'a, T: ?Sized>(&self, value: &'a T) -> Value<'a, T> {
+        Value {
+            value,
+            undefined: self.undefined,
+        }
     }
 }
 
 macro_rules! forward {
     ($($method:ident($($arg:ident: $ty:ty),*);)*) => {$(
         fn $method(self, $($arg: $ty),*) -> Result<Self::Ok, Self::Error> {
-            self.0.$method($($arg),*)
+            self.inner.$method($($arg),*)
         }
     )*};
 }
 
-impl<S: Serializer> Serializer for Shortest<S> {
+impl<S: Serializer> Serializer for Layout<S> {
     type Ok = S::Ok;
     type Error = S::Error;
-    type SerializeSeq = Shortest<S::SerializeSeq>;
-    type SerializeTuple = Shortest<S::SerializeTuple>;
-    type SerializeTupleStruct = Shortest<S::SerializeTupleStruct>;
-    type SerializeTupleVariant = Shortest<S::SerializeTupleVariant>;
-    type SerializeMap = Shortest<S::SerializeMap>;
-    type SerializeStruct = Shortest<S::SerializeStruct>;
-    type SerializeStructVariant = Shortest<S::SerializeStructVariant>;
+    type SerializeSeq = Layout<S::SerializeSeq>;
+    type SerializeTuple = Layout<S::SerializeTuple>;
+    type SerializeTupleStruct = Layout<S::SerializeTupleStruct>;
+    type SerializeTupleVariant = Layout<S::SerializeTupleVariant>;
+    type SerializeMap = Layout<S::SerializeMap>;
+    type SerializeStruct = Layout<S::SerializeStruct>;
+    type SerializeStructVariant = Layout<S::SerializeStructVariant>;
 
     forward! {
         serialize_bool(v: bool);
@@ -56,18 +83,27 @@ impl<S: Serializer> Serializer for Shortest<S> {
         serialize_char(v: char);
         serialize_str(v: &str);
         serialize_bytes(v: &[u8]);
-        serialize_none();
         serialize_unit();
         serialize_unit_struct(name: &'static str);
         serialize_unit_variant(name: &'static str, index: u32, variant: &'static str);
     }
 
     fn serialize_f32(self, v: f32) -> Result<Self::Ok, Self::Error> {
-        self.0.serialize_f64(crate::spice::shortest(v))
+        self.inner.serialize_f64(crate::spice::shortest(v))
+    }
+
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        match self.undefined {
+            true => serde_wasm_bindgen::preserve::serialize(&JsValue::UNDEFINED, self.inner),
+            false => self.inner.serialize_none(),
+        }
     }
 
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Self::Ok, Self::Error> {
-        self.0.serialize_some(&Value(value))
+        self.inner.serialize_some(&Value {
+            value,
+            undefined: self.undefined,
+        })
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
@@ -75,7 +111,13 @@ impl<S: Serializer> Serializer for Shortest<S> {
         name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        self.0.serialize_newtype_struct(name, &Value(value))
+        self.inner.serialize_newtype_struct(
+            name,
+            &Value {
+                value,
+                undefined: self.undefined,
+            },
+        )
     }
 
     fn serialize_newtype_variant<T: ?Sized + Serialize>(
@@ -85,16 +127,31 @@ impl<S: Serializer> Serializer for Shortest<S> {
         variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
-        self.0
-            .serialize_newtype_variant(name, index, variant, &Value(value))
+        self.inner.serialize_newtype_variant(
+            name,
+            index,
+            variant,
+            &Value {
+                value,
+                undefined: self.undefined,
+            },
+        )
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        self.0.serialize_seq(len).map(Shortest)
+        let undefined = self.undefined;
+
+        self.inner
+            .serialize_seq(len)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        self.0.serialize_tuple(len).map(Shortest)
+        let undefined = self.undefined;
+
+        self.inner
+            .serialize_tuple(len)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn serialize_tuple_struct(
@@ -102,7 +159,11 @@ impl<S: Serializer> Serializer for Shortest<S> {
         name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        self.0.serialize_tuple_struct(name, len).map(Shortest)
+        let undefined = self.undefined;
+
+        self.inner
+            .serialize_tuple_struct(name, len)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn serialize_tuple_variant(
@@ -112,13 +173,19 @@ impl<S: Serializer> Serializer for Shortest<S> {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        self.0
+        let undefined = self.undefined;
+
+        self.inner
             .serialize_tuple_variant(name, index, variant, len)
-            .map(Shortest)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        self.0.serialize_map(len).map(Shortest)
+        let undefined = self.undefined;
+
+        self.inner
+            .serialize_map(len)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn serialize_struct(
@@ -126,7 +193,11 @@ impl<S: Serializer> Serializer for Shortest<S> {
         name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        self.0.serialize_struct(name, len).map(Shortest)
+        let undefined = self.undefined;
+
+        self.inner
+            .serialize_struct(name, len)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn serialize_struct_variant(
@@ -136,28 +207,32 @@ impl<S: Serializer> Serializer for Shortest<S> {
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        self.0
+        let undefined = self.undefined;
+
+        self.inner
             .serialize_struct_variant(name, index, variant, len)
-            .map(Shortest)
+            .map(|inner| Layout { inner, undefined })
     }
 
     fn is_human_readable(&self) -> bool {
-        self.0.is_human_readable()
+        self.inner.is_human_readable()
     }
 }
 
 macro_rules! elements {
     ($($trait:ident::$method:ident),*) => {$(
-        impl<S: $trait> $trait for Shortest<S> {
+        impl<S: $trait> $trait for Layout<S> {
             type Ok = S::Ok;
             type Error = S::Error;
 
             fn $method<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), S::Error> {
-                self.0.$method(&Value(value))
+                let value = self.value(value);
+
+                self.inner.$method(&value)
             }
 
             fn end(self) -> Result<S::Ok, S::Error> {
-                self.0.end()
+                self.inner.end()
             }
         }
     )*};
@@ -170,26 +245,30 @@ elements!(
     SerializeTupleVariant::serialize_field
 );
 
-impl<S: SerializeMap> SerializeMap for Shortest<S> {
+impl<S: SerializeMap> SerializeMap for Layout<S> {
     type Ok = S::Ok;
     type Error = S::Error;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), S::Error> {
-        self.0.serialize_key(&Value(key))
+        let key = self.value(key);
+
+        self.inner.serialize_key(&key)
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), S::Error> {
-        self.0.serialize_value(&Value(value))
+        let value = self.value(value);
+
+        self.inner.serialize_value(&value)
     }
 
     fn end(self) -> Result<S::Ok, S::Error> {
-        self.0.end()
+        self.inner.end()
     }
 }
 
 macro_rules! fields {
     ($($trait:ident),*) => {$(
-        impl<S: $trait> $trait for Shortest<S> {
+        impl<S: $trait> $trait for Layout<S> {
             type Ok = S::Ok;
             type Error = S::Error;
 
@@ -198,15 +277,17 @@ macro_rules! fields {
                 key: &'static str,
                 value: &T,
             ) -> Result<(), S::Error> {
-                self.0.serialize_field(key, &Value(value))
+                let value = self.value(value);
+
+                self.inner.serialize_field(key, &value)
             }
 
             fn skip_field(&mut self, key: &'static str) -> Result<(), S::Error> {
-                self.0.skip_field(key)
+                self.inner.skip_field(key)
             }
 
             fn end(self) -> Result<S::Ok, S::Error> {
-                self.0.end()
+                self.inner.end()
             }
         }
     )*};
